@@ -7,10 +7,18 @@ import subprocess
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 
 from .profiles import load_profiles, save_profiles
 from .runtime import RuntimeController, RuntimeProfile
+from .screens import (
+    HermesScreen,
+    HomeScreen,
+    LogsScreen,
+    ModelsScreen,
+    PlaceholderScreen,
+    RuntimeScreen,
+)
 from .theme import COLORS, apply_theme
 
 
@@ -18,9 +26,8 @@ class AgentFoundryApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("AgentFoundry — Forge your local intelligence")
-        self.geometry("1180x760")
-        self.minsize(1000, 680)
-
+        self.geometry("1220x780")
+        self.minsize(1040, 700)
         apply_theme(self)
 
         self.log_queue: queue.Queue[str] = queue.Queue()
@@ -35,200 +42,85 @@ class AgentFoundryApp(tk.Tk):
         self.kv_v = tk.StringVar()
         self.rope_scale = tk.StringVar()
         self.yarn_orig_ctx = tk.StringVar()
-        self.status = tk.StringVar(value="IDLE")
         self.endpoint = tk.StringVar(value="http://127.0.0.1:8080/v1")
+        self.status = tk.StringVar(value="IDLE")
 
-        self._build_ui()
-        self._load_selected_profile()
+        self.nav_buttons: dict[str, ttk.Button] = {}
+        self.screens: dict[str, ttk.Frame] = {}
+
+        self._build_shell()
+        self._build_screens()
+        self.load_selected_profile()
+        self.show_screen("home")
         self.after(150, self._poll_logs)
         self.after(1000, self._refresh_status)
 
-    def _build_ui(self) -> None:
+    def _build_shell(self) -> None:
         self.columnconfigure(1, weight=1)
         self.rowconfigure(0, weight=1)
 
-        sidebar = ttk.Frame(self, style="Sidebar.TFrame", width=210)
+        sidebar = ttk.Frame(self, style="Sidebar.TFrame", width=225)
         sidebar.grid(row=0, column=0, sticky="nsw")
         sidebar.grid_propagate(False)
         sidebar.columnconfigure(0, weight=1)
+        sidebar.rowconfigure(20, weight=1)
 
         brand = ttk.Frame(sidebar, style="Sidebar.TFrame", padding=(18, 20, 18, 14))
         brand.grid(row=0, column=0, sticky="ew")
         ttk.Label(brand, text="AGENTFOUNDRY", style="Brand.TLabel").pack(anchor="w")
         ttk.Label(brand, text="FORGE YOUR LOCAL INTELLIGENCE", style="BrandSub.TLabel").pack(anchor="w", pady=(2, 0))
+        tk.Frame(sidebar, bg=COLORS["gold"], height=1).grid(row=1, column=0, sticky="ew", padx=18, pady=(2, 12))
 
-        divider = tk.Frame(sidebar, bg=COLORS["gold"], height=1)
-        divider.grid(row=1, column=0, sticky="ew", padx=18, pady=(2, 12))
-
-        for row, item in enumerate((
-            "⌂   Home",
-            "◇   Models",
-            "◈   Servers",
-            "✦   Agents",
-            "⇣   Downloads",
-            "⌁   Hardware",
-            "◎   Benchmarks",
-            "⚙   Settings",
-            "≡   Logs",
-        ), start=2):
-            ttk.Button(sidebar, text=item, style="Nav.TButton", command=lambda: None).grid(
-                row=row, column=0, sticky="ew", padx=8, pady=1
-            )
+        items = [
+            ("home", "⌂   Home"),
+            ("models", "◇   Minerva · Models"),
+            ("runtime", "◈   Vulcan · Runtime"),
+            ("hermes", "✦   Hermes · Agents"),
+            ("benchmarks", "◎   Apollo · Benchmarks"),
+            ("hardware", "⌁   Hardware"),
+            ("downloads", "⇣   Downloads"),
+            ("logs", "≡   Logs"),
+            ("settings", "⚙   Settings"),
+        ]
+        for row, (key, label) in enumerate(items, start=2):
+            button = ttk.Button(sidebar, text=label, style="Nav.TButton", command=lambda name=key: self.show_screen(name))
+            button.grid(row=row, column=0, sticky="ew", padx=8, pady=1)
+            self.nav_buttons[key] = button
 
         footer = ttk.Frame(sidebar, style="Sidebar.TFrame", padding=18)
-        footer.grid(row=20, column=0, sticky="sew")
-        sidebar.rowconfigure(19, weight=1)
+        footer.grid(row=21, column=0, sticky="sew")
         ttk.Label(footer, text="LOCAL-FIRST", style="BrandSub.TLabel").pack(anchor="w")
         ttk.Label(footer, text="Modern tools. Ancient wisdom.", style="BrandSub.TLabel").pack(anchor="w", pady=(4, 0))
 
-        main = ttk.Frame(self, style="Root.TFrame", padding=(26, 20, 26, 18))
-        main.grid(row=0, column=1, sticky="nsew")
-        main.columnconfigure(0, weight=1)
-        main.rowconfigure(5, weight=1)
+        self.content = ttk.Frame(self, style="Root.TFrame")
+        self.content.grid(row=0, column=1, sticky="nsew")
+        self.content.columnconfigure(0, weight=1)
+        self.content.rowconfigure(0, weight=1)
 
-        hero = ttk.Frame(main, style="Root.TFrame")
-        hero.grid(row=0, column=0, sticky="ew")
-        hero.columnconfigure(0, weight=1)
-        ttk.Label(hero, text="Local intelligence, under your control.", style="Hero.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            hero,
-            text="Manage models, tune hardware and launch autonomous agents from one forge.",
-            style="HeroSub.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+    def _build_screens(self) -> None:
+        self.screens = {
+            "home": HomeScreen(self.content, self),
+            "models": ModelsScreen(self.content, self),
+            "runtime": RuntimeScreen(self.content, self),
+            "hermes": HermesScreen(self.content, self),
+            "benchmarks": PlaceholderScreen(self.content, self, "Apollo · Benchmarks", "Measure before you optimize.", "Benchmark presets, token throughput, latency and profile comparison will live here."),
+            "hardware": PlaceholderScreen(self.content, self, "Hardware", "Know the machine behind the model.", "Automatic CPU, RAM, GPU and VRAM detection plus safe runtime recommendations will live here."),
+            "downloads": PlaceholderScreen(self.content, self, "Downloads", "Install models without fragile manual steps.", "Resumable Hugging Face downloads, progress tracking, retry and checksum verification will live here."),
+            "logs": LogsScreen(self.content, self),
+            "settings": PlaceholderScreen(self.content, self, "Settings", "Shape AgentFoundry around your local stack.", "Default model paths, executable paths, startup behavior and application preferences will live here."),
+        }
+        for screen in self.screens.values():
+            screen.grid(row=0, column=0, sticky="nsew")
 
-        status_wrap = ttk.Frame(hero, style="Root.TFrame")
-        status_wrap.grid(row=0, column=1, rowspan=2, sticky="e")
-        tk.Label(
-            status_wrap,
-            text="●",
-            bg=COLORS["obsidian"],
-            fg=COLORS["green"],
-            font=("Segoe UI", 12, "bold"),
-        ).pack(side="left", padx=(0, 6))
-        ttk.Label(status_wrap, textvariable=self.status, style="Status.TLabel").pack(side="left")
+    def show_screen(self, name: str) -> None:
+        screen = self.screens[name]
+        screen.tkraise()
+        for key, button in self.nav_buttons.items():
+            button.configure(style="NavActive.TButton" if key == name else "Nav.TButton")
+        if hasattr(screen, "refresh"):
+            screen.refresh()
 
-        metrics = ttk.Frame(main, style="Root.TFrame")
-        metrics.grid(row=1, column=0, sticky="ew", pady=(18, 14))
-        for i in range(4):
-            metrics.columnconfigure(i, weight=1)
-
-        self.metric_model = self._metric_card(metrics, 0, "MODEL", "Ready")
-        self.metric_server = self._metric_card(metrics, 1, "SERVER", "Stopped")
-        self.metric_agent = self._metric_card(metrics, 2, "AGENT", "Idle")
-        self.metric_context = self._metric_card(metrics, 3, "CONTEXT", "65K")
-
-        top_cards = ttk.Frame(main, style="Root.TFrame")
-        top_cards.grid(row=2, column=0, sticky="ew")
-        top_cards.columnconfigure(0, weight=3)
-        top_cards.columnconfigure(1, weight=2)
-
-        model_card = ttk.LabelFrame(top_cards, text="ACTIVE MODEL · MINERVA", style="Card.TLabelframe", padding=14)
-        model_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        model_card.columnconfigure(1, weight=1)
-
-        ttk.Label(model_card, text="Profile", style="Body.TLabel").grid(row=0, column=0, sticky="w", pady=4)
-        profile_box = ttk.Combobox(model_card, textvariable=self.profile_name, values=list(self.profiles), state="readonly")
-        profile_box.grid(row=0, column=1, sticky="ew", padx=(12, 8), pady=4)
-        profile_box.bind("<<ComboboxSelected>>", lambda _e: self._load_selected_profile())
-        ttk.Button(model_card, text="Save", style="Secondary.TButton", command=self._save_profile).grid(row=0, column=2, padx=(0, 2))
-
-        ttk.Label(model_card, text="GGUF model", style="Body.TLabel").grid(row=1, column=0, sticky="w", pady=4)
-        ttk.Entry(model_card, textvariable=self.model_path).grid(row=1, column=1, sticky="ew", padx=(12, 8), pady=4)
-        ttk.Button(model_card, text="Browse", style="Secondary.TButton", command=self._browse_model).grid(row=1, column=2, padx=(0, 2))
-
-        runtime_card = ttk.LabelFrame(top_cards, text="RUNTIME · VULCAN", style="Card.TLabelframe", padding=14)
-        runtime_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-        runtime_card.columnconfigure(0, weight=1)
-        runtime_card.columnconfigure(1, weight=1)
-
-        runtime_fields = [
-            ("Context", self.context),
-            ("GPU layers", self.gpu_layers),
-            ("KV cache K", self.kv_k),
-            ("KV cache V", self.kv_v),
-            ("RoPE scale", self.rope_scale),
-            ("YaRN original", self.yarn_orig_ctx),
-        ]
-        for idx, (label, variable) in enumerate(runtime_fields):
-            row = (idx // 2) * 2
-            col = idx % 2
-            ttk.Label(runtime_card, text=label, style="Muted.TLabel").grid(row=row, column=col, sticky="w", padx=(0, 8), pady=(0, 3))
-            ttk.Entry(runtime_card, textvariable=variable, width=14).grid(row=row + 1, column=col, sticky="ew", padx=(0, 8), pady=(0, 9))
-
-        actions = ttk.Frame(main, style="Root.TFrame")
-        actions.grid(row=3, column=0, sticky="ew", pady=(14, 12))
-        ttk.Button(actions, text="LAUNCH ALL", style="Gold.TButton", command=self._start_all).pack(side="left", padx=(0, 8))
-        ttk.Button(actions, text="Start server", style="Secondary.TButton", command=self._start_server).pack(side="left", padx=4)
-        ttk.Button(actions, text="Open Hermes", style="Secondary.TButton", command=self._start_hermes).pack(side="left", padx=4)
-        ttk.Button(actions, text="Stop server", style="Danger.TButton", command=self.runtime.stop_server).pack(side="left", padx=4)
-        ttk.Button(actions, text="Open model folder", style="Secondary.TButton", command=self._open_model_folder).pack(side="right")
-
-        system = ttk.LabelFrame(main, text="SYSTEM · JUPITER", style="Card.TLabelframe", padding=12)
-        system.grid(row=4, column=0, sticky="ew", pady=(0, 12))
-        system.columnconfigure(1, weight=1)
-        ttk.Label(system, text="Endpoint", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(system, textvariable=self.endpoint, style="Body.TLabel").grid(row=0, column=1, sticky="w", padx=(12, 0))
-        ttk.Label(system, text="Host", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(5, 0))
-        ttk.Label(system, text=self._system_summary(), style="Body.TLabel").grid(row=1, column=1, sticky="w", padx=(12, 0), pady=(5, 0))
-
-        log_frame = ttk.LabelFrame(main, text="ORACLE LOG", style="Card.TLabelframe", padding=10)
-        log_frame.grid(row=5, column=0, sticky="nsew")
-        log_frame.columnconfigure(0, weight=1)
-        log_frame.rowconfigure(0, weight=1)
-
-        self.log_text = tk.Text(
-            log_frame,
-            wrap="word",
-            height=12,
-            font=("Cascadia Mono", 9),
-            state="disabled",
-            bg=COLORS["midnight"],
-            fg=COLORS["marble"],
-            insertbackground=COLORS["marble"],
-            selectbackground=COLORS["border"],
-            relief="flat",
-            padx=10,
-            pady=10,
-        )
-        self.log_text.grid(row=0, column=0, sticky="nsew")
-        scrollbar = ttk.Scrollbar(log_frame, command=self.log_text.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        self.log_text.configure(yscrollcommand=scrollbar.set)
-        ttk.Button(log_frame, text="Clear log", style="Secondary.TButton", command=self._clear_logs).grid(row=1, column=0, sticky="e", pady=(8, 0))
-
-    def _metric_card(self, parent: ttk.Frame, column: int, caption: str, value: str) -> ttk.Label:
-        card = ttk.Frame(parent, style="PanelAlt.TFrame", padding=(14, 11))
-        card.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 6, 0 if column == 3 else 6))
-        ttk.Label(card, text=caption, style="MetricCaption.TLabel").pack(anchor="w")
-        label = ttk.Label(card, text=value, style="Metric.TLabel")
-        label.pack(anchor="w", pady=(3, 0))
-        return label
-
-    def _system_summary(self) -> str:
-        pieces = [platform.system(), platform.release(), platform.machine()]
-        llama = shutil.which("llama-server") or shutil.which("llama-server.exe")
-        hermes = shutil.which("hermes") or shutil.which("hermes.exe")
-        pieces.append("llama.cpp ready" if llama else "llama.cpp missing")
-        pieces.append("Hermes ready" if hermes else "Hermes missing")
-        return "  ·  ".join(pieces)
-
-    def _load_selected_profile(self) -> None:
-        profile = self.profiles[self.profile_name.get()]
-        self.model_path.set(profile.model_path)
-        self.context.set(str(profile.context))
-        self.gpu_layers.set(str(profile.gpu_layers))
-        self.kv_k.set(profile.kv_cache_k)
-        self.kv_v.set(profile.kv_cache_v)
-        self.rope_scale.set(str(profile.rope_scale))
-        self.yarn_orig_ctx.set(str(profile.yarn_orig_ctx))
-        self.endpoint.set(profile.base_url)
-        if hasattr(self, "metric_context"):
-            self.metric_context.configure(text=f"{int(profile.context) // 1000}K")
-        if hasattr(self, "metric_model"):
-            model_name = Path(profile.model_path).stem if profile.model_path else "Ready"
-            self.metric_model.configure(text=model_name[:24])
-
-    def _profile_from_form(self) -> RuntimeProfile:
+    def current_profile(self) -> RuntimeProfile:
         return RuntimeProfile(
             model_path=self.model_path.get().strip(),
             context=int(self.context.get()),
@@ -239,50 +131,48 @@ class AgentFoundryApp(tk.Tk):
             yarn_orig_ctx=int(self.yarn_orig_ctx.get()),
         )
 
-    def _save_profile(self) -> None:
+    def load_selected_profile(self) -> None:
+        profile = self.profiles[self.profile_name.get()]
+        self.model_path.set(profile.model_path)
+        self.context.set(str(profile.context))
+        self.gpu_layers.set(str(profile.gpu_layers))
+        self.kv_k.set(profile.kv_cache_k)
+        self.kv_v.set(profile.kv_cache_v)
+        self.rope_scale.set(str(profile.rope_scale))
+        self.yarn_orig_ctx.set(str(profile.yarn_orig_ctx))
+        self.endpoint.set(profile.base_url)
+        models = self.screens.get("models")
+        if isinstance(models, ModelsScreen):
+            models.refresh_profiles()
+        home = self.screens.get("home")
+        if isinstance(home, HomeScreen):
+            home.refresh()
+
+    def save_profile(self) -> None:
         try:
-            self.profiles[self.profile_name.get()] = self._profile_from_form()
+            self.profiles[self.profile_name.get()] = self.current_profile()
             save_profiles(self.profiles)
-            self._append_log("[AgentFoundry] Profile saved.")
+            self.log_queue.put("[AgentFoundry] Profile saved.")
         except Exception as exc:
             messagebox.showerror("AgentFoundry", str(exc))
 
-    def _browse_model(self) -> None:
-        filename = filedialog.askopenfilename(
-            title="Select GGUF model",
-            filetypes=[("GGUF models", "*.gguf"), ("All files", "*.*")],
-        )
-        if filename:
-            self.model_path.set(filename)
-            if hasattr(self, "metric_model"):
-                self.metric_model.configure(text=Path(filename).stem[:24])
-
-    def _open_model_folder(self) -> None:
-        path = Path(self.model_path.get()).expanduser()
-        folder = path.parent if path.suffix else path
-        if not folder.exists():
-            messagebox.showwarning("AgentFoundry", f"Folder does not exist:\n{folder}")
-            return
-        if platform.system() == "Windows":
-            subprocess.Popen(["explorer", str(folder)])
-
-    def _start_server(self) -> None:
+    def start_server(self) -> None:
         try:
-            profile = self._profile_from_form()
+            profile = self.current_profile()
             self.endpoint.set(profile.base_url)
             self.runtime.start_server(profile)
         except Exception as exc:
             messagebox.showerror("AgentFoundry", str(exc))
 
-    def _start_hermes(self) -> None:
+    def start_hermes(self) -> None:
         try:
             self.runtime.start_hermes()
         except Exception as exc:
             messagebox.showerror("AgentFoundry", str(exc))
 
-    def _start_all(self) -> None:
+    def start_all(self) -> None:
         try:
-            profile = self._profile_from_form()
+            profile = self.current_profile()
             self.endpoint.set(profile.base_url)
             self.runtime.start_server(profile)
         except Exception as exc:
@@ -300,52 +190,56 @@ class AgentFoundryApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _append_log(self, line: str) -> None:
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", line + "\n")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
+    def stop_server(self) -> None:
+        self.runtime.stop_server()
+
+    def open_model_folder(self) -> None:
+        path = Path(self.model_path.get()).expanduser()
+        folder = path.parent if path.suffix else path
+        if not folder.exists():
+            messagebox.showwarning("AgentFoundry", f"Folder does not exist:\n{folder}")
+            return
+        if platform.system() == "Windows":
+            subprocess.Popen(["explorer", str(folder)])
+
+    def system_summary(self) -> str:
+        pieces = [platform.system(), platform.release(), platform.machine()]
+        pieces.append("llama.cpp ready" if (shutil.which("llama-server") or shutil.which("llama-server.exe")) else "llama.cpp missing")
+        pieces.append("Hermes ready" if (shutil.which("hermes") or shutil.which("hermes.exe")) else "Hermes missing")
+        return "  ·  ".join(pieces)
 
     def _poll_logs(self) -> None:
-        try:
-            while True:
-                self._append_log(self.log_queue.get_nowait())
-        except queue.Empty:
-            pass
+        while True:
+            try:
+                line = self.log_queue.get_nowait()
+            except queue.Empty:
+                break
+            logs = self.screens.get("logs")
+            if isinstance(logs, LogsScreen):
+                logs.append(line)
+            home = self.screens.get("home")
+            if isinstance(home, HomeScreen):
+                home.append_preview(line)
         self.after(150, self._poll_logs)
 
     def _refresh_status(self) -> None:
-        server = self.runtime.server_running()
-        hermes = self.runtime.hermes_running()
-
-        if server and hermes:
-            self.status.set("ONLINE")
-            self.metric_server.configure(text="Running")
-            self.metric_agent.configure(text="Connected")
-        elif server:
-            self.status.set("SERVER ONLINE")
-            self.metric_server.configure(text="Running")
-            self.metric_agent.configure(text="Idle")
-        elif hermes:
-            self.status.set("AGENT ONLINE")
-            self.metric_server.configure(text="Stopped")
-            self.metric_agent.configure(text="Connected")
+        if self.runtime.server_running() and self.runtime.hermes_running():
+            self.status.set("READY")
+        elif self.runtime.server_running():
+            self.status.set("RUNTIME")
         else:
             self.status.set("IDLE")
-            self.metric_server.configure(text="Stopped")
-            self.metric_agent.configure(text="Idle")
-
+        home = self.screens.get("home")
+        if isinstance(home, HomeScreen):
+            home.refresh()
+        hermes = self.screens.get("hermes")
+        if isinstance(hermes, HermesScreen):
+            hermes.refresh()
         self.after(1000, self._refresh_status)
-
-    def _clear_logs(self) -> None:
-        self.log_text.configure(state="normal")
-        self.log_text.delete("1.0", "end")
-        self.log_text.configure(state="disabled")
 
 
 def main() -> None:
-    app = AgentFoundryApp()
-    app.mainloop()
+    AgentFoundryApp().mainloop()
 
 
 if __name__ == "__main__":
