@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">AgentFoundry mark</title>
+  <desc id="desc">A classical laurel wreath surrounding a geometric forge flame and AI node.</desc>
+  <rect width="256" height="256" rx="44" fill="#080B0F"/>
+  <g fill="none" stroke="#D6A85F" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M72 190C38 160 34 104 62 66"/>
+    <path d="M184 190c34-30 38-86 10-124"/>
+    <path d="M55 82l20 8M48 108l23 3M49 136l22-4M59 163l19-10"/>
+    <path d="M201 82l-20 8M208 108l-23 3M207 136l-22-4M197 163l-19-10"/>
+    <path d="M128 47l28 37-18 19 18 28-28 49-28-49 18-28-18-19z"/>
+    <circle cx="128" cy="111" r="8" fill="#5EA7FF" stroke="#5EA7FF"/>
+    <path d="M128 119v28M106 139l22 8 22-8" stroke="#5EA7FF"/>
+  </g>
+</svg>
