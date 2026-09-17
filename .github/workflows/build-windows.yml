@@ -27,7 +27,7 @@ jobs:
       - name: Build portable executable
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --windowed --onefile --name AgentFoundry src/agentfoundry/app.py
+          pyinstaller --noconfirm --clean --windowed --onefile --name AgentFoundry launcher.py
 
       - name: Package portable ZIP
         shell: pwsh
