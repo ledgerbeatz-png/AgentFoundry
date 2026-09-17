@@ -1,8 +1,18 @@
-# AgentFoundry
+<p align="center">
+  <img src="assets/agentfoundry-mark.svg" width="120" alt="AgentFoundry logo" />
+</p>
 
-**Forge your local intelligence.**
+<h1 align="center">AgentFoundry</h1>
+
+<p align="center"><strong>Forge your local intelligence.</strong></p>
+
+<p align="center">
+  Local AI model management · hardware-aware tuning · agent orchestration
+</p>
 
 AgentFoundry is an open-source desktop manager for local AI models and agent runtimes. It aims to make GGUF models, llama.cpp, hardware-aware tuning, and agent frameworks such as Hermes easy to configure and launch from one place.
+
+The visual identity combines a restrained Greco-Roman mythic language with a practical developer-tool interface: obsidian surfaces, marble-white text, imperial-gold accents and subtle digital-god archetypes for major subsystems.
 
 ## What it does
 
@@ -27,6 +37,20 @@ The first built-in profile mirrors a tested Windows setup:
 - reasoning disabled
 - llama.cpp OpenAI endpoint on `127.0.0.1:8080`
 - Hermes Chat Completions integration
+
+## Interface direction
+
+The desktop UI follows the AgentFoundry design system:
+
+- **Minerva** — model intelligence and profiles
+- **Vulcan** — runtime and hardware tuning
+- **Jupiter** — system/orchestration state
+- **Hermes** — agents and tool connections
+- **Apollo** — performance and benchmarks
+
+These mythic names are secondary labels only; technical controls remain explicit and readable.
+
+See [`docs/DESIGN.md`](docs/DESIGN.md) for the full design language.
 
 ## Quick start (development)
 
@@ -57,6 +81,7 @@ The default model path can be changed inside the app.
 - configurable context/GPU/KV settings
 - Hermes launcher
 - status + logs
+- AgentFoundry dark mythic UI
 
 ### v0.2
 
@@ -82,8 +107,13 @@ The default model path can be changed inside the app.
 
 ```text
 AgentFoundry/
+├── assets/
+│   └── agentfoundry-mark.svg
+├── docs/
+│   └── DESIGN.md
 ├── src/agentfoundry/
 │   ├── app.py
+│   ├── theme.py
 │   ├── runtime.py
 │   └── profiles.py
 ├── model-manifests/
@@ -98,8 +128,18 @@ AgentFoundry/
 
 Large model files are **not committed to this repository**. AgentFoundry will support importing existing GGUF files and later downloading models from external providers such as Hugging Face.
 
+## Brand principle
+
+> **Mythology creates atmosphere. The interface creates trust.**
+
+Promotional art may use male and female digitized classical deities, subtle circuitry, temple architecture and celestial motifs. Inside the desktop application, those elements stay restrained so the product remains a serious technical tool.
+
 ## Status
 
 Early development / MVP.
 
 Contributions and hardware profiles are welcome.
+
+---
+
+<p align="center"><em>Modern tools. Ancient wisdom. Local power.</em></p>
