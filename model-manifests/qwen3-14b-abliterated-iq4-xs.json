@@ -1,0 +1,23 @@
+{
+  "id": "qwen3-14b-abliterated-iq4-xs",
+  "name": "Qwen3-14B Abliterated IQ4_XS",
+  "family": "qwen3",
+  "format": "gguf",
+  "quantization": "IQ4_XS",
+  "parameter_size": "14.8B",
+  "default_profile": {
+    "context": 65536,
+    "gpu_layers": 20,
+    "kv_cache_k": "q4_0",
+    "kv_cache_v": "q4_0",
+    "kv_offload": false,
+    "rope_scaling": "yarn",
+    "rope_scale": 2.0,
+    "yarn_orig_ctx": 40960,
+    "reasoning": "off",
+    "reasoning_budget": 0,
+    "host": "127.0.0.1",
+    "port": 8080
+  },
+  "notes": "Reference profile validated on a Windows laptop with 6 GB VRAM. Hardware-specific tuning is still recommended."
+}
