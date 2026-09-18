@@ -16,6 +16,7 @@ def test_app_settings_roundtrip(tmp_path, monkeypatch) -> None:
         model_dir=r"C:\AI\Models",
         host="127.0.0.1",
         port=9090,
+        first_run_complete=True,
     )
     save_settings(original)
     loaded = load_settings()
@@ -25,6 +26,7 @@ def test_app_settings_roundtrip(tmp_path, monkeypatch) -> None:
     assert loaded.model_dir == original.model_dir
     assert loaded.host == "127.0.0.1"
     assert loaded.port == 9090
+    assert loaded.first_run_complete is True
 
 
 def test_normalize_adds_default_model_directory() -> None:
