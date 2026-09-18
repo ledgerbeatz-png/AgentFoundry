@@ -8,6 +8,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .benchmark import BenchmarkRunner, BenchmarkResult, select_best_result
+from .downloads import DownloadCancelled, DownloadProgress, ResumableDownloader, filename_from_url, human_bytes
 from .hardware import detect_hardware, recommend_runtime
 from .runtime import RuntimeProfile
 from .theme import COLORS
@@ -505,6 +506,183 @@ class HardwareScreen(BaseScreen):
         self.app.log_queue.put(
             "[AgentFoundry] Hardware recommendation applied to current runtime settings."
         )
+
+
+class DownloadsScreen(BaseScreen):
+    def __init__(self, master: tk.Misc, app: "AgentFoundryApp") -> None:
+        super().__init__(
+            master,
+            app,
+            "Downloads",
+            "Install large GGUF models without fragile manual steps.",
+        )
+
+        body = ttk.Frame(self, style="Root.TFrame")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+
+        form = ttk.LabelFrame(body, text="MODEL DOWNLOAD", style="Card.TLabelframe", padding=16)
+        form.grid(row=0, column=0, sticky="ew")
+        form.columnconfigure(1, weight=1)
+
+        self.url = tk.StringVar()
+        default_dir = str(Path(app.model_path.get()).parent) if app.model_path.get() else str(Path.home() / "AgentFoundry" / "models")
+        self.destination_dir = tk.StringVar(value=default_dir)
+        self.sha256 = tk.StringVar()
+
+        ttk.Label(form, text="URL", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self.url).grid(row=0, column=1, columnspan=2, sticky="ew", padx=(12, 0), pady=6)
+
+        ttk.Label(form, text="Destination", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self.destination_dir).grid(row=1, column=1, sticky="ew", padx=(12, 8), pady=6)
+        ttk.Button(form, text="Browse", style="Secondary.TButton", command=self._browse_destination).grid(row=1, column=2, pady=6)
+
+        ttk.Label(form, text="SHA256 (optional)", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self.sha256).grid(row=2, column=1, columnspan=2, sticky="ew", padx=(12, 0), pady=6)
+
+        progress_card = ttk.LabelFrame(body, text="TRANSFER", style="Card.TLabelframe", padding=16)
+        progress_card.grid(row=1, column=0, sticky="ew", pady=(14, 0))
+        progress_card.columnconfigure(0, weight=1)
+
+        self.progress_var = tk.DoubleVar(value=0.0)
+        self.progress_bar = ttk.Progressbar(progress_card, variable=self.progress_var, maximum=100)
+        self.progress_bar.grid(row=0, column=0, sticky="ew")
+
+        self.status_text = tk.StringVar(value="Ready.")
+        self.speed_text = tk.StringVar(value="")
+        ttk.Label(progress_card, textvariable=self.status_text, style="Body.TLabel").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(progress_card, textvariable=self.speed_text, style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(4, 0))
+
+        actions = ttk.Frame(progress_card, style="Panel.TFrame")
+        actions.grid(row=3, column=0, sticky="ew", pady=(14, 0))
+        self.start_button = ttk.Button(actions, text="DOWNLOAD MODEL", style="Gold.TButton", command=self._start)
+        self.start_button.pack(side="left")
+        self.cancel_button = ttk.Button(actions, text="Cancel", style="Danger.TButton", command=self._cancel, state="disabled")
+        self.cancel_button.pack(side="left", padx=8)
+        ttk.Button(actions, text="Use current model folder", style="Secondary.TButton", command=self._use_current_folder).pack(side="right")
+
+        self.downloader: ResumableDownloader | None = None
+        self.running = False
+        self.completed_path: Path | None = None
+
+    def _browse_destination(self) -> None:
+        folder = filedialog.askdirectory(title="Select model download folder", initialdir=self.destination_dir.get() or None)
+        if folder:
+            self.destination_dir.set(folder)
+
+    def _use_current_folder(self) -> None:
+        current = Path(self.app.model_path.get()).expanduser()
+        folder = current.parent if current.suffix else current
+        if str(folder):
+            self.destination_dir.set(str(folder))
+
+    def _start(self) -> None:
+        if self.running:
+            return
+
+        url = self.url.get().strip()
+        destination_dir = Path(self.destination_dir.get().strip()).expanduser()
+        if not url.startswith(("https://", "http://")):
+            messagebox.showerror("AgentFoundry", "Enter a valid HTTP or HTTPS model URL.")
+            return
+        if not self.destination_dir.get().strip():
+            messagebox.showerror("AgentFoundry", "Choose a destination folder.")
+            return
+
+        filename = filename_from_url(url)
+        if not filename.lower().endswith(".gguf"):
+            if not messagebox.askyesno(
+                "AgentFoundry",
+                f"The URL resolves to '{filename}', not a .gguf filename. Continue anyway?",
+            ):
+                return
+
+        destination = destination_dir / filename
+        self.running = True
+        self.completed_path = None
+        self.progress_var.set(0.0)
+        self.status_text.set(f"Preparing {filename}…")
+        self.speed_text.set("")
+        self.start_button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
+
+        def log(message: str) -> None:
+            self.app.log_queue.put(message)
+
+        def progress(update: DownloadProgress) -> None:
+            self.after(0, lambda update=update: self._update_progress(update))
+
+        self.downloader = ResumableDownloader(progress=progress, log=log)
+
+        def worker() -> None:
+            try:
+                path = self.downloader.download(
+                    url,
+                    destination,
+                    expected_sha256=self.sha256.get(),
+                    retries=3,
+                )
+                self.after(0, lambda path=path: self._complete(path))
+            except DownloadCancelled:
+                self.after(0, self._cancelled)
+            except Exception as exc:
+                self.after(0, lambda exc=exc: self._failed(exc))
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _update_progress(self, update: DownloadProgress) -> None:
+        if update.total > 0:
+            self.progress_var.set(update.fraction * 100)
+            amount = f"{human_bytes(update.downloaded)} / {human_bytes(update.total)}"
+        else:
+            amount = human_bytes(update.downloaded)
+
+        if update.state == "verifying":
+            self.status_text.set("Verifying SHA256…")
+            self.speed_text.set(amount)
+        elif update.state == "complete":
+            self.progress_var.set(100.0)
+            self.status_text.set("Download complete.")
+            self.speed_text.set(amount)
+        else:
+            self.status_text.set(f"Downloading… {amount}")
+            self.speed_text.set(f"{human_bytes(update.speed_bps)}/s" if update.speed_bps > 0 else "")
+
+    def _complete(self, path: Path) -> None:
+        self.running = False
+        self.completed_path = path
+        self.start_button.configure(state="normal")
+        self.cancel_button.configure(state="disabled")
+        self.progress_var.set(100.0)
+        self.status_text.set(f"Complete: {path.name}")
+        self.speed_text.set(str(path))
+        self.app.model_path.set(str(path))
+        self.app.log_queue.put(f"[Downloads] Active model path set to {path}.")
+
+    def _cancel(self) -> None:
+        if self.downloader is not None:
+            self.downloader.cancel()
+            self.status_text.set("Cancelling after current chunk…")
+
+    def _cancelled(self) -> None:
+        self.running = False
+        self.start_button.configure(state="normal")
+        self.cancel_button.configure(state="disabled")
+        self.status_text.set("Cancelled. Partial file kept; starting again resumes it.")
+        self.speed_text.set("")
+
+    def _failed(self, exc: Exception) -> None:
+        self.running = False
+        self.start_button.configure(state="normal")
+        self.cancel_button.configure(state="disabled")
+        self.status_text.set("Download failed.")
+        self.speed_text.set(str(exc))
+        self.app.log_queue.put(f"[Downloads] Failed: {exc}")
+
+    def refresh(self) -> None:
+        if not self.running and not self.destination_dir.get().strip():
+            self._use_current_folder()
 
 
 class LogsScreen(BaseScreen):
