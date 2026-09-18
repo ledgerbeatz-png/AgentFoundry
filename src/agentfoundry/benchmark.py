@@ -5,11 +5,14 @@ import os
 import shutil
 import subprocess
 import time
+import concurrent.futures
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+from .self_setup import ConcurrencyResult, select_concurrency
 
 from .runtime import RuntimeController, RuntimeProfile
 
@@ -186,3 +189,54 @@ class BenchmarkRunner:
             if progress:
                 progress(result)
         return results
+
+
+@dataclass
+class ConcurrencyBenchmarkSummary:
+    results: list[ConcurrencyResult]
+    recommended_concurrency: int
+
+
+class ConcurrencyBenchmarkRunner:
+    """Measure an already-running OpenAI-compatible local endpoint at 1/2/4 workers."""
+
+    def __init__(self, request_timeout: float = 90.0, log: Callable[[str], None] | None = None) -> None:
+        self.request_timeout = request_timeout
+        self.log = log or (lambda _message: None)
+
+    def _one(self, base_url: str, model_id: str, prompt: str, max_tokens: int) -> float:
+        payload = {
+            "model": model_id,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": 0,
+        }
+        started = time.perf_counter()
+        BenchmarkRunner._post_json(f"{base_url}/chat/completions", payload, self.request_timeout)
+        return max(time.perf_counter() - started, 0.001)
+
+    def run(self, profile: RuntimeProfile, concurrency_values: tuple[int, ...] = (1, 2, 4)) -> ConcurrencyBenchmarkSummary:
+        models = RuntimeController().get_models(profile)
+        if not models:
+            raise RuntimeError("No model is available on the running local endpoint.")
+        model_id = models[0]
+        results: list[ConcurrencyResult] = []
+        prompt = "Reply with exactly: concurrency ready"
+
+        for workers in concurrency_values:
+            self.log(f"[Apollo] Testing concurrency {workers}…")
+            wall_started = time.perf_counter()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [pool.submit(self._one, profile.base_url, model_id, prompt, 32) for _ in range(workers)]
+                latencies = [future.result() for future in futures]
+            wall = max(time.perf_counter() - wall_started, 0.001)
+            result = ConcurrencyResult(
+                concurrency=workers,
+                wall_seconds=wall,
+                throughput_rps=workers / wall,
+                average_latency_seconds=sum(latencies) / len(latencies),
+            )
+            results.append(result)
+            self.log(f"[Apollo] {workers} workers · {result.throughput_rps:.3f} req/s · {result.average_latency_seconds:.2f}s avg")
+
+        return ConcurrencyBenchmarkSummary(results=results, recommended_concurrency=select_concurrency(results))

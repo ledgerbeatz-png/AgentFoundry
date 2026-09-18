@@ -7,11 +7,13 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .benchmark import BenchmarkRunner, BenchmarkResult, select_best_result
+from .benchmark import BenchmarkRunner, BenchmarkResult, ConcurrencyBenchmarkRunner, select_best_result
 from .catalog import load_model_manifests
 from .commerce import Feature, Plan
 from .downloads import DownloadCancelled, DownloadProgress, ResumableDownloader, filename_from_url, human_bytes
 from .hardware import detect_hardware, recommend_runtime
+from .packs import builtin_registry
+from .self_setup import build_self_setup_plan
 from .runtime import RuntimeProfile
 from .settings import detect_runtime_paths
 from .theme import COLORS
@@ -301,8 +303,91 @@ class BenchmarksScreen(BaseScreen):
         )
         self.apply_button.grid(row=0, column=1, sticky="e")
 
+        concurrency = ttk.LabelFrame(body, text="AI WORKERS · CONCURRENCY", style="Card.TLabelframe", padding=10)
+        concurrency.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        concurrency.columnconfigure(0, weight=1)
+        self.worker_state = ttk.Label(
+            concurrency,
+            text="Start the main runtime, then measure 1 / 2 / 4 parallel local AI requests.",
+            style="Body.TLabel",
+        )
+        self.worker_state.grid(row=0, column=0, sticky="w")
+        ttk.Button(
+            concurrency,
+            text="AUTO OPTIMIZE AI WORKERS",
+            style="Gold.TButton",
+            command=self._start_concurrency,
+        ).grid(row=0, column=1, sticky="e", padx=(12, 0))
+
+        worker_columns = ("workers", "wall", "throughput", "avg_latency")
+        self.worker_table = ttk.Treeview(concurrency, columns=worker_columns, show="headings", height=3)
+        worker_headings = {
+            "workers": "Workers",
+            "wall": "Wall time",
+            "throughput": "Requests/s",
+            "avg_latency": "Avg latency",
+        }
+        for key in worker_columns:
+            self.worker_table.heading(key, text=worker_headings[key])
+            self.worker_table.column(key, width=130, anchor="center")
+        self.worker_table.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+
         self.best_result: BenchmarkResult | None = None
+        self.recommended_workers = 1
         self.running = False
+
+
+    def _start_concurrency(self) -> None:
+        if self.running:
+            return
+        if not self.app.runtime.server_running():
+            messagebox.showwarning(
+                "AgentFoundry",
+                "Start the main llama.cpp runtime first. Worker optimization measures the live local endpoint.",
+            )
+            return
+        self.running = True
+        for item in self.worker_table.get_children():
+            self.worker_table.delete(item)
+        self.worker_state.configure(text="Apollo is measuring 1 / 2 / 4 workers…")
+        profile = self.app.current_profile()
+        runner = ConcurrencyBenchmarkRunner(log=self.app.log_queue.put)
+
+        def worker() -> None:
+            try:
+                summary = runner.run(profile)
+                self.after(0, lambda: self._finish_concurrency(summary))
+            except Exception as exc:
+                self.after(0, lambda exc=exc: self._fail_concurrency(exc))
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_concurrency(self, summary) -> None:
+        self.running = False
+        self.recommended_workers = summary.recommended_concurrency
+        for result in summary.results:
+            self.worker_table.insert(
+                "",
+                "end",
+                values=(
+                    result.concurrency,
+                    f"{result.wall_seconds:.2f}s",
+                    f"{result.throughput_rps:.3f}",
+                    f"{result.average_latency_seconds:.2f}s",
+                ),
+            )
+        self.worker_state.configure(
+            text=f"Apollo recommendation: {summary.recommended_concurrency} parallel AI worker(s)."
+        )
+        self.app.log_queue.put(
+            f"[Apollo] Recommended AI concurrency: {summary.recommended_concurrency} worker(s)."
+        )
+
+    def _fail_concurrency(self, exc: Exception) -> None:
+        self.running = False
+        self.worker_state.configure(text=f"Worker optimization failed: {exc}")
+        self.app.log_queue.put(f"[Apollo] Concurrency benchmark failed: {exc}")
 
     def _parse_layers(self) -> list[int]:
         values: list[int] = []
@@ -508,6 +593,85 @@ class HardwareScreen(BaseScreen):
         self.app.kv_v.set(self.recommendation.kv_cache_v)
         self.app.log_queue.put(
             "[AgentFoundry] Hardware recommendation applied to current runtime settings."
+        )
+
+
+class SelfSetupScreen(BaseScreen):
+    def __init__(self, master: tk.Misc, app: "AgentFoundryApp") -> None:
+        super().__init__(master, app, "Forge · Self Setup", "Analyze this machine and forge a compatible local AI stack.")
+
+        body = ttk.Frame(self, style="Root.TFrame")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
+
+        machine = ttk.LabelFrame(body, text="1 · MACHINE", style="Card.TLabelframe", padding=16)
+        machine.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.machine_text = ttk.Label(machine, text="Press ANALYZE MY SYSTEM to begin.", style="Body.TLabel", wraplength=430, justify="left")
+        self.machine_text.pack(anchor="w")
+
+        plan = ttk.LabelFrame(body, text="2 · FORGE PLAN", style="Card.TLabelframe", padding=16)
+        plan.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self.plan_text = ttk.Label(plan, text="No plan generated yet.", style="Body.TLabel", wraplength=430, justify="left")
+        self.plan_text.pack(anchor="w")
+
+        packs = ttk.LabelFrame(body, text="3 · COMPATIBLE PACKS", style="Card.TLabelframe", padding=16)
+        packs.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        self.pack_text = ttk.Label(packs, text="Pack discovery runs after analysis.", style="Body.TLabel", wraplength=900, justify="left")
+        self.pack_text.pack(anchor="w")
+
+        actions = ttk.Frame(body, style="Root.TFrame")
+        actions.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(18, 0))
+        ttk.Button(actions, text="ANALYZE MY SYSTEM", style="Gold.TButton", command=self._analyze).pack(side="left")
+        self.apply_button = ttk.Button(actions, text="APPLY SAFE SETUP", style="Secondary.TButton", command=self._apply, state="disabled")
+        self.apply_button.pack(side="left", padx=8)
+        ttk.Button(actions, text="RUN APOLLO BENCHMARK", style="Secondary.TButton", command=lambda: app.show_screen("benchmarks")).pack(side="right")
+
+        self.info = None
+        self.plan = None
+
+    def _analyze(self) -> None:
+        self.info = detect_hardware()
+        self.plan = build_self_setup_plan(self.info, self.app.model_path.get())
+        self.machine_text.configure(text=(
+            f"{self.info.os_name} {self.info.os_version} · {self.info.architecture}\n"
+            f"{self.info.cpu}\n"
+            f"{self.info.ram_gb:.1f} GB RAM · {self.info.gpu} · {self.info.vram_gb:.1f} GB VRAM"
+        ))
+        self.plan_text.configure(text=(
+            f"Model class: {self.plan.model.parameter_class} · {self.plan.model.quantization}\n"
+            f"Runtime: {self.plan.runtime.context:,} context · {self.plan.runtime.gpu_layers} GPU layers\n"
+            f"KV cache: {self.plan.runtime.kv_cache_k}/{self.plan.runtime.kv_cache_v}\n"
+            f"Concurrency: {self.plan.recommended_concurrency} until Apollo measures this machine"
+        ))
+        compatible = [
+            pack for pack in builtin_registry().all()
+            if not pack.requires_local_model or bool(self.app.model_path.get().strip())
+        ]
+        if compatible:
+            lines = []
+            for pack in compatible:
+                mode = "PAPER ONLY" if pack.paper_only else "ENABLED"
+                lines.append(f"{pack.name} · {mode}\n{pack.description}")
+            self.pack_text.configure(text="\n\n".join(lines))
+        else:
+            self.pack_text.configure(text="No compatible packs yet. Select a local model first.")
+        self.apply_button.configure(state="normal")
+        self.app.log_queue.put("[Forge] Self Setup analysis complete.")
+
+    def _apply(self) -> None:
+        if self.plan is None:
+            self._analyze()
+        if self.plan is None:
+            return
+        self.app.context.set(str(self.plan.runtime.context))
+        self.app.gpu_layers.set(str(self.plan.runtime.gpu_layers))
+        self.app.kv_k.set(self.plan.runtime.kv_cache_k)
+        self.app.kv_v.set(self.plan.runtime.kv_cache_v)
+        self.app.log_queue.put("[Forge] Safe Self Setup applied to the current runtime profile.")
+        messagebox.showinfo(
+            "AgentFoundry",
+            "Safe runtime settings applied.\n\nRun Apollo Benchmarks next to measure GPU layers and concurrency before saving the final profile.",
         )
 
 
