@@ -25,6 +25,7 @@ from .screens import (
     SettingsScreen,
 )
 from .theme import COLORS, apply_theme
+from .wizard import FirstRunWizard
 
 
 class AgentFoundryApp(tk.Tk):
@@ -64,6 +65,11 @@ class AgentFoundryApp(tk.Tk):
         self.show_screen("home")
         self.after(150, self._poll_logs)
         self.after(1000, self._refresh_status)
+        if not self.settings.first_run_complete:
+            self.after(350, self.open_setup_wizard)
+
+    def open_setup_wizard(self) -> None:
+        FirstRunWizard(self)
 
     def _build_shell(self) -> None:
         self.columnconfigure(1, weight=1)
