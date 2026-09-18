@@ -42,15 +42,16 @@ class BenchmarkRunner:
         test_port: int = 18080,
         startup_timeout: float = 90.0,
         request_timeout: float = 90.0,
+        llama_server_path: str = "",
     ) -> None:
         self.log = log or (lambda _message: None)
         self.test_port = test_port
         self.startup_timeout = startup_timeout
         self.request_timeout = request_timeout
+        self.llama_server_path = llama_server_path
 
-    @staticmethod
-    def _find_llama_server() -> str:
-        executable = shutil.which("llama-server") or shutil.which("llama-server.exe")
+    def _find_llama_server(self) -> str:
+        executable = self.llama_server_path or shutil.which("llama-server") or shutil.which("llama-server.exe")
         if not executable:
             raise FileNotFoundError("llama-server was not found in PATH.")
         return executable
