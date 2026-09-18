@@ -12,6 +12,7 @@ from tkinter import messagebox, ttk
 from .profiles import load_profiles, save_profiles
 from .runtime import RuntimeController, RuntimeProfile
 from .screens import (
+    BenchmarksScreen,
     HardwareScreen,
     HermesScreen,
     HomeScreen,
@@ -104,7 +105,7 @@ class AgentFoundryApp(tk.Tk):
             "models": ModelsScreen(self.content, self),
             "runtime": RuntimeScreen(self.content, self),
             "hermes": HermesScreen(self.content, self),
-            "benchmarks": PlaceholderScreen(self.content, self, "Apollo · Benchmarks", "Measure before you optimize.", "Benchmark presets, token throughput, latency and profile comparison will live here."),
+            "benchmarks": BenchmarksScreen(self.content, self),
             "hardware": HardwareScreen(self.content, self),
             "downloads": PlaceholderScreen(self.content, self, "Downloads", "Install models without fragile manual steps.", "Resumable Hugging Face downloads, progress tracking, retry and checksum verification will live here."),
             "logs": LogsScreen(self.content, self),
