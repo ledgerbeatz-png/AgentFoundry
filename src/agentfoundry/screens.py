@@ -8,6 +8,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .benchmark import BenchmarkRunner, BenchmarkResult, select_best_result
+from .catalog import load_model_manifests
 from .downloads import DownloadCancelled, DownloadProgress, ResumableDownloader, filename_from_url, human_bytes
 from .hardware import detect_hardware, recommend_runtime
 from .runtime import RuntimeProfile
