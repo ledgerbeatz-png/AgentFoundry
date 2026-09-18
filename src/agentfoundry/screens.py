@@ -12,6 +12,7 @@ from .catalog import load_model_manifests
 from .downloads import DownloadCancelled, DownloadProgress, ResumableDownloader, filename_from_url, human_bytes
 from .hardware import detect_hardware, recommend_runtime
 from .runtime import RuntimeProfile
+from .settings import detect_runtime_paths
 from .theme import COLORS
 
 
@@ -720,6 +721,120 @@ class LogsScreen(BaseScreen):
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
         self.text.configure(state="disabled")
+
+
+class SettingsScreen(BaseScreen):
+    def __init__(self, master: tk.Misc, app: "AgentFoundryApp") -> None:
+        super().__init__(
+            master,
+            app,
+            "Settings",
+            "Shape AgentFoundry around your local stack.",
+        )
+
+        card = ttk.LabelFrame(self, text="LOCAL RUNTIME", style="Card.TLabelframe", padding=16)
+        card.grid(row=1, column=0, sticky="new")
+        card.columnconfigure(1, weight=1)
+
+        self.llama_path = tk.StringVar(value=app.settings.llama_server_path)
+        self.hermes_path = tk.StringVar(value=app.settings.hermes_path)
+        self.model_dir = tk.StringVar(value=app.settings.model_dir)
+        self.host = tk.StringVar(value=app.settings.host)
+        self.port = tk.StringVar(value=str(app.settings.port))
+        self.status_text = tk.StringVar(value="")
+
+        ttk.Label(card, text="llama-server", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=6)
+        ttk.Entry(card, textvariable=self.llama_path).grid(row=0, column=1, sticky="ew", padx=(12, 8), pady=6)
+        ttk.Button(card, text="Browse", style="Secondary.TButton", command=self._browse_llama).grid(row=0, column=2, pady=6)
+
+        ttk.Label(card, text="Hermes", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=6)
+        ttk.Entry(card, textvariable=self.hermes_path).grid(row=1, column=1, sticky="ew", padx=(12, 8), pady=6)
+        ttk.Button(card, text="Browse", style="Secondary.TButton", command=self._browse_hermes).grid(row=1, column=2, pady=6)
+
+        ttk.Label(card, text="Model folder", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=6)
+        ttk.Entry(card, textvariable=self.model_dir).grid(row=2, column=1, sticky="ew", padx=(12, 8), pady=6)
+        ttk.Button(card, text="Browse", style="Secondary.TButton", command=self._browse_models).grid(row=2, column=2, pady=6)
+
+        ttk.Label(card, text="Host", style="Muted.TLabel").grid(row=3, column=0, sticky="w", pady=6)
+        ttk.Entry(card, textvariable=self.host).grid(row=3, column=1, sticky="ew", padx=(12, 8), pady=6)
+
+        ttk.Label(card, text="Port", style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=6)
+        ttk.Entry(card, textvariable=self.port).grid(row=4, column=1, sticky="ew", padx=(12, 8), pady=6)
+
+        actions = ttk.Frame(card, style="Panel.TFrame")
+        actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(16, 0))
+        ttk.Button(actions, text="AUTO DETECT", style="Secondary.TButton", command=self._detect).pack(side="left")
+        ttk.Button(actions, text="SAVE SETTINGS", style="Gold.TButton", command=self._save).pack(side="left", padx=8)
+
+        ttk.Label(card, textvariable=self.status_text, style="Muted.TLabel", wraplength=760).grid(
+            row=6, column=0, columnspan=3, sticky="w", pady=(12, 0)
+        )
+
+    def _browse_llama(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select llama-server executable",
+            filetypes=[("Executable", "*.exe"), ("All files", "*.*")],
+        )
+        if path:
+            self.llama_path.set(path)
+
+    def _browse_hermes(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select Hermes executable",
+            filetypes=[("Executable", "*.exe"), ("All files", "*.*")],
+        )
+        if path:
+            self.hermes_path.set(path)
+
+    def _browse_models(self) -> None:
+        folder = filedialog.askdirectory(
+            title="Select default model folder",
+            initialdir=self.model_dir.get() or None,
+        )
+        if folder:
+            self.model_dir.set(folder)
+
+    def _detect(self) -> None:
+        detected = detect_runtime_paths()
+        if detected.llama_server_path:
+            self.llama_path.set(detected.llama_server_path)
+        if detected.hermes_path:
+            self.hermes_path.set(detected.hermes_path)
+        if not self.model_dir.get().strip():
+            self.model_dir.set(detected.model_dir)
+
+        llama_state = self.llama_path.get().strip() or "not found"
+        hermes_state = self.hermes_path.get().strip() or "not found"
+        self.status_text.set(
+            f"llama.cpp: {llama_state}  ·  Hermes: {hermes_state}"
+        )
+
+    def _save(self) -> None:
+        try:
+            port = int(self.port.get())
+            if port < 1 or port > 65535:
+                raise ValueError("Port must be between 1 and 65535.")
+            host = self.host.get().strip()
+            if not host:
+                raise ValueError("Host cannot be empty.")
+        except ValueError as exc:
+            messagebox.showerror("AgentFoundry", str(exc))
+            return
+
+        self.app.settings.llama_server_path = self.llama_path.get().strip()
+        self.app.settings.hermes_path = self.hermes_path.get().strip()
+        self.app.settings.model_dir = self.model_dir.get().strip()
+        self.app.settings.host = host
+        self.app.settings.port = port
+        self.app.save_app_settings()
+        self.status_text.set("Settings saved.")
+
+    def refresh(self) -> None:
+        self.llama_path.set(self.app.settings.llama_server_path)
+        self.hermes_path.set(self.app.settings.hermes_path)
+        self.model_dir.set(self.app.settings.model_dir)
+        self.host.set(self.app.settings.host)
+        self.port.set(str(self.app.settings.port))
 
 
 class PlaceholderScreen(BaseScreen):
