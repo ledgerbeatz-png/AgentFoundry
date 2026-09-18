@@ -35,6 +35,30 @@ def _first_existing(candidates: list[str | None]) -> str:
     return ""
 
 
+def _glob_first(patterns: list[str]) -> str:
+    for pattern in patterns:
+        for path in sorted(Path().glob(pattern)):
+            if path.is_file():
+                return str(path)
+    return ""
+
+
+def _windows_package_executable(filename: str) -> str:
+    local = os.environ.get("LOCALAPPDATA")
+    if not local:
+        return ""
+    packages = Path(local) / "Microsoft" / "WinGet" / "Packages"
+    if not packages.is_dir():
+        return ""
+    try:
+        for path in packages.rglob(filename):
+            if path.is_file():
+                return str(path)
+    except OSError:
+        pass
+    return ""
+
+
 def detect_runtime_paths() -> AppSettings:
     llama_candidates = [
         shutil.which("llama-server"),
@@ -43,12 +67,14 @@ def detect_runtime_paths() -> AppSettings:
         r"C:\Program Files\llama.cpp\bin\llama-server.exe",
         str(Path.home() / "llama.cpp" / "llama-server.exe"),
         str(Path.home() / "Downloads" / "llama-server.exe"),
+        _windows_package_executable("llama-server.exe") if os.name == "nt" else "",
     ]
     hermes_candidates = [
         shutil.which("hermes"),
         shutil.which("hermes.exe"),
         str(Path.home() / ".local" / "bin" / "hermes"),
         str(Path.home() / "AppData" / "Roaming" / "Python" / "Scripts" / "hermes.exe"),
+        _windows_package_executable("hermes.exe") if os.name == "nt" else "",
     ]
 
     return AppSettings(
