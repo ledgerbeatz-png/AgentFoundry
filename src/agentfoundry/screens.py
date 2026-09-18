@@ -346,7 +346,7 @@ class BenchmarksScreen(BaseScreen):
         def log(message: str) -> None:
             self.app.log_queue.put(message)
 
-        runner = BenchmarkRunner(log=log)
+        runner = BenchmarkRunner(log=log, llama_server_path=self.app.settings.llama_server_path)
 
         def on_result(result: BenchmarkResult) -> None:
             self.after(0, lambda result=result: self._append_result(result))
@@ -528,7 +528,7 @@ class DownloadsScreen(BaseScreen):
         form.columnconfigure(1, weight=1)
 
         self.url = tk.StringVar()
-        default_dir = str(Path(app.model_path.get()).parent) if app.model_path.get() else str(Path.home() / "AgentFoundry" / "models")
+        default_dir = app.settings.model_dir or (str(Path(app.model_path.get()).parent) if app.model_path.get() else str(Path.home() / "AgentFoundry" / "models"))
         self.destination_dir = tk.StringVar(value=default_dir)
         self.sha256 = tk.StringVar()
 
