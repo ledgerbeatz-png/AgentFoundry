@@ -18,6 +18,7 @@ class AppSettings:
     model_dir: str = ""
     host: str = "127.0.0.1"
     port: int = 8080
+    first_run_complete: bool = False
 
     def normalize(self) -> "AppSettings":
         if not self.model_dir:
