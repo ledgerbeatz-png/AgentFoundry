@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/agentfoundry-mark.svg" width="120" alt="AgentFoundry logo" />
+  <img src="file_000000006f20820a90fa81246854a2d2.png" alt="AgentFoundry — Local AI Trading Intelligence" />
 </p>
 
 <h1 align="center">AgentFoundry</h1>
