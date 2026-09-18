@@ -7,7 +7,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .benchmark import BenchmarkRunner, BenchmarkResult, select_best_result
+from .benchmark import BenchmarkRunner, BenchmarkResult, ConcurrencyBenchmarkRunner, select_best_result
 from .catalog import load_model_manifests
 from .commerce import Feature, Plan
 from .downloads import DownloadCancelled, DownloadProgress, ResumableDownloader, filename_from_url, human_bytes
@@ -303,8 +303,91 @@ class BenchmarksScreen(BaseScreen):
         )
         self.apply_button.grid(row=0, column=1, sticky="e")
 
+        concurrency = ttk.LabelFrame(body, text="AI WORKERS · CONCURRENCY", style="Card.TLabelframe", padding=10)
+        concurrency.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        concurrency.columnconfigure(0, weight=1)
+        self.worker_state = ttk.Label(
+            concurrency,
+            text="Start the main runtime, then measure 1 / 2 / 4 parallel local AI requests.",
+            style="Body.TLabel",
+        )
+        self.worker_state.grid(row=0, column=0, sticky="w")
+        ttk.Button(
+            concurrency,
+            text="AUTO OPTIMIZE AI WORKERS",
+            style="Gold.TButton",
+            command=self._start_concurrency,
+        ).grid(row=0, column=1, sticky="e", padx=(12, 0))
+
+        worker_columns = ("workers", "wall", "throughput", "avg_latency")
+        self.worker_table = ttk.Treeview(concurrency, columns=worker_columns, show="headings", height=3)
+        worker_headings = {
+            "workers": "Workers",
+            "wall": "Wall time",
+            "throughput": "Requests/s",
+            "avg_latency": "Avg latency",
+        }
+        for key in worker_columns:
+            self.worker_table.heading(key, text=worker_headings[key])
+            self.worker_table.column(key, width=130, anchor="center")
+        self.worker_table.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+
         self.best_result: BenchmarkResult | None = None
+        self.recommended_workers = 1
         self.running = False
+
+
+    def _start_concurrency(self) -> None:
+        if self.running:
+            return
+        if not self.app.runtime.server_running():
+            messagebox.showwarning(
+                "AgentFoundry",
+                "Start the main llama.cpp runtime first. Worker optimization measures the live local endpoint.",
+            )
+            return
+        self.running = True
+        for item in self.worker_table.get_children():
+            self.worker_table.delete(item)
+        self.worker_state.configure(text="Apollo is measuring 1 / 2 / 4 workers…")
+        profile = self.app.current_profile()
+        runner = ConcurrencyBenchmarkRunner(log=self.app.log_queue.put)
+
+        def worker() -> None:
+            try:
+                summary = runner.run(profile)
+                self.after(0, lambda: self._finish_concurrency(summary))
+            except Exception as exc:
+                self.after(0, lambda exc=exc: self._fail_concurrency(exc))
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_concurrency(self, summary) -> None:
+        self.running = False
+        self.recommended_workers = summary.recommended_concurrency
+        for result in summary.results:
+            self.worker_table.insert(
+                "",
+                "end",
+                values=(
+                    result.concurrency,
+                    f"{result.wall_seconds:.2f}s",
+                    f"{result.throughput_rps:.3f}",
+                    f"{result.average_latency_seconds:.2f}s",
+                ),
+            )
+        self.worker_state.configure(
+            text=f"Apollo recommendation: {summary.recommended_concurrency} parallel AI worker(s)."
+        )
+        self.app.log_queue.put(
+            f"[Apollo] Recommended AI concurrency: {summary.recommended_concurrency} worker(s)."
+        )
+
+    def _fail_concurrency(self, exc: Exception) -> None:
+        self.running = False
+        self.worker_state.configure(text=f"Worker optimization failed: {exc}")
+        self.app.log_queue.put(f"[Apollo] Concurrency benchmark failed: {exc}")
 
     def _parse_layers(self) -> list[int]:
         values: list[int] = []
