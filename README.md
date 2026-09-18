@@ -4,15 +4,33 @@
 
 <h1 align="center">AgentFoundry</h1>
 
-<p align="center"><strong>Forge your local intelligence.</strong></p>
+<p align="center"><strong>FORGE YOUR TRADING INTELLIGENCE</strong></p>
 
 <p align="center">
-  Local AI model management · hardware-aware tuning · agent orchestration
+  Local AI · self-configuring · risk-controlled · learning from every paper trade
 </p>
 
-AgentFoundry is an open-source desktop manager for local AI models and agent runtimes. It aims to make GGUF models, llama.cpp, hardware-aware tuning, and agent frameworks such as Hermes easy to configure and launch from one place.
+AgentFoundry is a local AI trading research platform designed to configure itself around the hardware it runs on. It combines GGUF model management, llama.cpp optimization, Hermes orchestration, deterministic risk controls, multi-agent analysis, adaptive paper-trade position management and evidence-based strategy learning.
+
+The current trading stack is deliberately **paper-only**. AgentFoundry records why a simulated trade was opened, held, partially closed or exited, then measures the outcome so candidate strategies can be replayed and validated before promotion. Paper or historical results do not guarantee future performance.
 
 The visual identity combines a restrained Greco-Roman mythic language with a practical developer-tool interface: obsidian surfaces, marble-white text, imperial-gold accents and subtle digital-god archetypes for major subsystems.
+
+## Trading intelligence
+
+**SCAN → FILTER → RISK AI + ALPHA AI → PAPER ENTRY → POSITION MANAGER → OUTCOME → LEARN**
+
+- **Forge / Self Setup** detects hardware and recommends a suitable local model/runtime profile
+- **Apollo** benchmarks GPU offload and 1 / 2 / 4 concurrent local AI workers
+- Deterministic hard-risk gates run before AI interpretation
+- Parallel RISK and ALPHA roles are designed to analyze surviving opportunities
+- The paper Position Manager evaluates HOLD / PARTIAL SELL / EXIT decisions
+- MFE and MAE measure how much upside was available and how much downside was experienced
+- Exit Strategy Lab replays the same market path against multiple exit policies
+- SQLite Trade Memory stores decisions and later outcomes for reproducible evaluation
+- Strategy candidates must pass minimum-sample promotion gates before advancing
+
+See [Trading Packs](docs/TRADING_PACKS.md), [Self Setup](docs/SELF_SETUP.md) and [Evidence & Marketing](docs/EVIDENCE_AND_MARKETING.md).
 
 ## What it does
 
@@ -23,6 +41,7 @@ The visual identity combines a restrained Greco-Roman mythic language with a pra
 - Detect basic Windows hardware information
 - Show runtime status and logs
 - Keep large model files outside GitHub
+- Install/discover research capability packs such as the paper-only Solana Research pack
 
 ## Current reference profile
 
@@ -136,7 +155,9 @@ Promotional art may use male and female digitized classical deities, subtle circ
 
 ## Status
 
-Early development / MVP.
+**Early development / research MVP. Paper trading only.**
+
+The project is currently building the complete loop from self-configuration to auditable paper decisions, position management, outcome tracking and conservative strategy evolution.
 
 Contributions and hardware profiles are welcome.
 
