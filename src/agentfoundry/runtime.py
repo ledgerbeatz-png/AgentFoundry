@@ -34,8 +34,10 @@ class RuntimeProfile:
 
 
 class RuntimeController:
-    def __init__(self, log_queue: Optional[Queue[str]] = None) -> None:
+    def __init__(self, log_queue: Optional[Queue[str]] = None, llama_server_path: str = "", hermes_path: str = "") -> None:
         self.log_queue = log_queue or Queue()
+        self.llama_server_path = llama_server_path
+        self.hermes_path = hermes_path
         self.server_process: Optional[subprocess.Popen[str]] = None
         self.hermes_process: Optional[subprocess.Popen[str]] = None
         self._log_threads: list[threading.Thread] = []
@@ -78,7 +80,7 @@ class RuntimeController:
         if not model.is_file():
             raise FileNotFoundError(f"GGUF model not found: {model}")
 
-        executable = self.find_executable("llama-server") or self.find_executable("llama-server.exe")
+        executable = self.llama_server_path or self.find_executable("llama-server") or self.find_executable("llama-server.exe")
         if not executable:
             raise FileNotFoundError("llama-server was not found in PATH.")
 
@@ -136,7 +138,7 @@ class RuntimeController:
             self.log("[AgentFoundry] Hermes is already running.")
             return
 
-        executable = self.find_executable("hermes") or self.find_executable("hermes.exe")
+        executable = self.hermes_path or self.find_executable("hermes") or self.find_executable("hermes.exe")
         if not executable:
             raise FileNotFoundError("Hermes CLI was not found in PATH.")
 
