@@ -13,6 +13,7 @@ from .profiles import load_profiles, save_profiles
 from .runtime import RuntimeController, RuntimeProfile
 from .screens import (
     BenchmarksScreen,
+    DownloadsScreen,
     HardwareScreen,
     HermesScreen,
     HomeScreen,
@@ -107,7 +108,7 @@ class AgentFoundryApp(tk.Tk):
             "hermes": HermesScreen(self.content, self),
             "benchmarks": BenchmarksScreen(self.content, self),
             "hardware": HardwareScreen(self.content, self),
-            "downloads": PlaceholderScreen(self.content, self, "Downloads", "Install models without fragile manual steps.", "Resumable Hugging Face downloads, progress tracking, retry and checksum verification will live here."),
+            "downloads": DownloadsScreen(self.content, self),
             "logs": LogsScreen(self.content, self),
             "settings": PlaceholderScreen(self.content, self, "Settings", "Shape AgentFoundry around your local stack.", "Default model paths, executable paths, startup behavior and application preferences will live here."),
         }
