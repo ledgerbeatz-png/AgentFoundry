@@ -12,12 +12,18 @@
     "kv_cache_v": "q4_0",
     "kv_offload": false,
     "rope_scaling": "yarn",
-    "rope_scale": 2.0,
+    "rope_scale": 2,
     "yarn_orig_ctx": 40960,
     "reasoning": "off",
     "reasoning_budget": 0,
     "host": "127.0.0.1",
     "port": 8080
   },
-  "notes": "Reference profile validated on a Windows laptop with 6 GB VRAM. Hardware-specific tuning is still recommended."
+  "notes": "Reference profile validated on a Windows laptop with 6 GB VRAM. Hardware-specific tuning is still recommended.",
+  "source": {
+    "provider": "huggingface",
+    "repository": "richardyoung/Qwen3-14B-abliterated-GGUF",
+    "filename": "Qwen3-14B-abliterated-IQ4_XS.gguf",
+    "download_url": "https://huggingface.co/richardyoung/Qwen3-14B-abliterated-GGUF/resolve/main/Qwen3-14B-abliterated-IQ4_XS.gguf"
+  }
 }
