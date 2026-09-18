@@ -19,6 +19,9 @@ class AppSettings:
     host: str = "127.0.0.1"
     port: int = 8080
     first_run_complete: bool = False
+    plan: str = "free"
+    trial_started_at: str = ""
+    license_token: str = ""
 
     def normalize(self) -> "AppSettings":
         if not self.model_dir:
