@@ -49,6 +49,18 @@ class RuntimeController:
     def find_executable(name: str) -> Optional[str]:
         return shutil.which(name)
 
+    @staticmethod
+    def _configured_or_path(configured: str, *names: str) -> Optional[str]:
+        if configured:
+            path = Path(configured).expanduser()
+            if path.is_file():
+                return str(path)
+        for name in names:
+            found = shutil.which(name)
+            if found:
+                return found
+        return None
+
     def build_llama_args(self, profile: RuntimeProfile) -> list[str]:
         return [
             "-m", profile.model_path,
@@ -80,7 +92,7 @@ class RuntimeController:
         if not model.is_file():
             raise FileNotFoundError(f"GGUF model not found: {model}")
 
-        executable = self.llama_server_path or self.find_executable("llama-server") or self.find_executable("llama-server.exe")
+        executable = self._configured_or_path(self.llama_server_path, "llama-server", "llama-server.exe")
         if not executable:
             raise FileNotFoundError("llama-server was not found in PATH.")
 
@@ -138,7 +150,7 @@ class RuntimeController:
             self.log("[AgentFoundry] Hermes is already running.")
             return
 
-        executable = self.hermes_path or self.find_executable("hermes") or self.find_executable("hermes.exe")
+        executable = self._configured_or_path(self.hermes_path, "hermes", "hermes.exe")
         if not executable:
             raise FileNotFoundError("Hermes CLI was not found in PATH.")
 
