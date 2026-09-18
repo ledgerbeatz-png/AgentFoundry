@@ -232,12 +232,18 @@ class AgentFoundryApp(tk.Tk):
             messagebox.showerror("AgentFoundry", str(exc))
 
     def start_hermes(self) -> None:
+        if not self.feature_available(Feature.HERMES_AUTOMATION):
+            self.show_screen("license")
+            return
         try:
             self.runtime.start_hermes()
         except Exception as exc:
             messagebox.showerror("AgentFoundry", str(exc))
 
     def start_all(self) -> None:
+        if not self.feature_available(Feature.HERMES_AUTOMATION):
+            self.show_screen("license")
+            return
         try:
             profile = self.current_profile()
             self.endpoint.set(profile.base_url)
