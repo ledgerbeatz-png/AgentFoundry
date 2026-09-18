@@ -9,6 +9,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
+from .commerce import Entitlement, Feature, Plan, feature_available, start_trial
 from .profiles import load_profiles, save_profiles
 from .runtime import RuntimeController, RuntimeProfile
 from .settings import AppSettings, load_settings, save_settings
@@ -18,6 +19,7 @@ from .screens import (
     HardwareScreen,
     HermesScreen,
     HomeScreen,
+    LicenseScreen,
     LogsScreen,
     ModelsScreen,
     PlaceholderScreen,
@@ -38,6 +40,15 @@ class AgentFoundryApp(tk.Tk):
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.settings = load_settings()
+        try:
+            entitlement_plan = Plan(self.settings.plan)
+        except ValueError:
+            entitlement_plan = Plan.FREE
+        self.entitlement = Entitlement(
+            plan=entitlement_plan,
+            trial_started_at=self.settings.trial_started_at,
+            license_token=self.settings.license_token,
+        )
         self.runtime = RuntimeController(
             self.log_queue,
             llama_server_path=self.settings.llama_server_path,
@@ -96,6 +107,7 @@ class AgentFoundryApp(tk.Tk):
             ("hardware", "⌁   Hardware"),
             ("downloads", "⇣   Downloads"),
             ("logs", "≡   Logs"),
+            ("license", "◆   License"),
             ("settings", "⚙   Settings"),
         ]
         for row, (key, label) in enumerate(items, start=2):
@@ -123,12 +135,42 @@ class AgentFoundryApp(tk.Tk):
             "hardware": HardwareScreen(self.content, self),
             "downloads": DownloadsScreen(self.content, self),
             "logs": LogsScreen(self.content, self),
+            "license": LicenseScreen(self.content, self),
             "settings": SettingsScreen(self.content, self),
         }
         for screen in self.screens.values():
             screen.grid(row=0, column=0, sticky="nsew")
 
+    def feature_available(self, feature: Feature) -> bool:
+        return feature_available(self.entitlement, feature)
+
+    def start_trial(self) -> None:
+        before = self.entitlement.trial_started_at
+        start_trial(self.entitlement)
+        if before == self.entitlement.trial_started_at and before:
+            messagebox.showinfo("AgentFoundry", "The trial has already been started for this installation.")
+            return
+        self._persist_entitlement()
+        self.log_queue.put("[AgentFoundry] Pro trial started.")
+        license_screen = self.screens.get("license")
+        if isinstance(license_screen, LicenseScreen):
+            license_screen.refresh()
+
+    def _persist_entitlement(self) -> None:
+        self.settings.plan = self.entitlement.plan.value
+        self.settings.trial_started_at = self.entitlement.trial_started_at
+        self.settings.license_token = self.entitlement.license_token
+        self.save_app_settings()
+
     def show_screen(self, name: str) -> None:
+        gated = {
+            "downloads": Feature.RESUMABLE_DOWNLOADS,
+            "benchmarks": Feature.BENCHMARKS,
+            "hermes": Feature.HERMES_AUTOMATION,
+        }
+        feature = gated.get(name)
+        if feature is not None and not self.feature_available(feature):
+            name = "license"
         screen = self.screens[name]
         screen.tkraise()
         for key, button in self.nav_buttons.items():
