@@ -765,6 +765,7 @@ class SettingsScreen(BaseScreen):
         actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(16, 0))
         ttk.Button(actions, text="AUTO DETECT", style="Secondary.TButton", command=self._detect).pack(side="left")
         ttk.Button(actions, text="SAVE SETTINGS", style="Gold.TButton", command=self._save).pack(side="left", padx=8)
+        ttk.Button(actions, text="RUN SETUP WIZARD", style="Secondary.TButton", command=app.open_setup_wizard).pack(side="right")
 
         ttk.Label(card, textvariable=self.status_text, style="Muted.TLabel", wraplength=760).grid(
             row=6, column=0, columnspan=3, sticky="w", pady=(12, 0)
