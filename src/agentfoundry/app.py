@@ -11,6 +11,7 @@ from tkinter import messagebox, ttk
 
 from .profiles import load_profiles, save_profiles
 from .runtime import RuntimeController, RuntimeProfile
+from .settings import AppSettings, load_settings, save_settings
 from .screens import (
     BenchmarksScreen,
     DownloadsScreen,
@@ -21,6 +22,7 @@ from .screens import (
     ModelsScreen,
     PlaceholderScreen,
     RuntimeScreen,
+    SettingsScreen,
 )
 from .theme import COLORS, apply_theme
 
@@ -34,7 +36,12 @@ class AgentFoundryApp(tk.Tk):
         apply_theme(self)
 
         self.log_queue: queue.Queue[str] = queue.Queue()
-        self.runtime = RuntimeController(self.log_queue)
+        self.settings = load_settings()
+        self.runtime = RuntimeController(
+            self.log_queue,
+            llama_server_path=self.settings.llama_server_path,
+            hermes_path=self.settings.hermes_path,
+        )
         self.profiles = load_profiles()
         self.profile_name = tk.StringVar(value=next(iter(self.profiles)))
 
@@ -45,7 +52,7 @@ class AgentFoundryApp(tk.Tk):
         self.kv_v = tk.StringVar()
         self.rope_scale = tk.StringVar()
         self.yarn_orig_ctx = tk.StringVar()
-        self.endpoint = tk.StringVar(value="http://127.0.0.1:8080/v1")
+        self.endpoint = tk.StringVar(value=f"http://{self.settings.host}:{self.settings.port}/v1")
         self.status = tk.StringVar(value="IDLE")
 
         self.nav_buttons: dict[str, ttk.Button] = {}
@@ -110,7 +117,7 @@ class AgentFoundryApp(tk.Tk):
             "hardware": HardwareScreen(self.content, self),
             "downloads": DownloadsScreen(self.content, self),
             "logs": LogsScreen(self.content, self),
-            "settings": PlaceholderScreen(self.content, self, "Settings", "Shape AgentFoundry around your local stack.", "Default model paths, executable paths, startup behavior and application preferences will live here."),
+            "settings": SettingsScreen(self.content, self),
         }
         for screen in self.screens.values():
             screen.grid(row=0, column=0, sticky="nsew")
@@ -132,6 +139,8 @@ class AgentFoundryApp(tk.Tk):
             kv_cache_v=self.kv_v.get().strip() or "q4_0",
             rope_scale=float(self.rope_scale.get()),
             yarn_orig_ctx=int(self.yarn_orig_ctx.get()),
+            host=self.settings.host,
+            port=self.settings.port,
         )
 
     def load_selected_profile(self) -> None:
@@ -150,6 +159,13 @@ class AgentFoundryApp(tk.Tk):
         home = self.screens.get("home")
         if isinstance(home, HomeScreen):
             home.refresh()
+
+    def save_app_settings(self) -> None:
+        save_settings(self.settings)
+        self.runtime.llama_server_path = self.settings.llama_server_path
+        self.runtime.hermes_path = self.settings.hermes_path
+        self.endpoint.set(f"http://{self.settings.host}:{self.settings.port}/v1")
+        self.log_queue.put("[AgentFoundry] Application settings saved.")
 
     def save_profile(self) -> None:
         try:
@@ -207,8 +223,10 @@ class AgentFoundryApp(tk.Tk):
 
     def system_summary(self) -> str:
         pieces = [platform.system(), platform.release(), platform.machine()]
-        pieces.append("llama.cpp ready" if (shutil.which("llama-server") or shutil.which("llama-server.exe")) else "llama.cpp missing")
-        pieces.append("Hermes ready" if (shutil.which("hermes") or shutil.which("hermes.exe")) else "Hermes missing")
+        llama_ready = bool(self.settings.llama_server_path or shutil.which("llama-server") or shutil.which("llama-server.exe"))
+        hermes_ready = bool(self.settings.hermes_path or shutil.which("hermes") or shutil.which("hermes.exe"))
+        pieces.append("llama.cpp ready" if llama_ready else "llama.cpp missing")
+        pieces.append("Hermes ready" if hermes_ready else "Hermes missing")
         return "  ·  ".join(pieces)
 
     def _poll_logs(self) -> None:
