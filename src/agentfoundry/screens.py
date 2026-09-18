@@ -7,6 +7,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from .benchmark import BenchmarkRunner, BenchmarkResult, select_best_result
 from .hardware import detect_hardware, recommend_runtime
 from .runtime import RuntimeProfile
 from .theme import COLORS
@@ -218,6 +219,191 @@ class HermesScreen(BaseScreen):
 
     def refresh(self) -> None:
         self.status_label.configure(text="Hermes running" if self.app.runtime.hermes_running() else "Hermes idle")
+
+
+class BenchmarksScreen(BaseScreen):
+    def __init__(self, master: tk.Misc, app: "AgentFoundryApp") -> None:
+        super().__init__(
+            master,
+            app,
+            "Apollo · Benchmarks",
+            "Measure before you optimize.",
+        )
+
+        body = ttk.Frame(self, style="Root.TFrame")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(1, weight=1)
+
+        controls = ttk.LabelFrame(body, text="BENCHMARK PLAN", style="Card.TLabelframe", padding=14)
+        controls.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        controls.columnconfigure(1, weight=1)
+
+        ttk.Label(controls, text="GPU layers", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        self.layers = tk.StringVar(value="12,16,20,24")
+        ttk.Entry(controls, textvariable=self.layers).grid(row=0, column=1, sticky="ew", padx=(12, 8))
+        ttk.Button(
+            controls,
+            text="RUN BENCHMARK",
+            style="Gold.TButton",
+            command=self._start,
+        ).grid(row=0, column=2)
+
+        self.state_label = ttk.Label(
+            controls,
+            text="Ready. Each value is tested in an isolated llama.cpp process.",
+            style="Muted.TLabel",
+        )
+        self.state_label.grid(row=1, column=0, columnspan=3, sticky="w", pady=(10, 0))
+
+        results = ttk.LabelFrame(body, text="RESULTS", style="Card.TLabelframe", padding=10)
+        results.grid(row=1, column=0, sticky="nsew")
+        results.columnconfigure(0, weight=1)
+        results.rowconfigure(0, weight=1)
+
+        columns = ("layers", "status", "latency", "tokens", "tps")
+        self.table = ttk.Treeview(results, columns=columns, show="headings", height=10)
+        headings = {
+            "layers": "GPU layers",
+            "status": "Status",
+            "latency": "Latency",
+            "tokens": "Tokens",
+            "tps": "Approx tok/s",
+        }
+        widths = {"layers": 110, "status": 110, "latency": 130, "tokens": 90, "tps": 130}
+        for key in columns:
+            self.table.heading(key, text=headings[key])
+            self.table.column(key, width=widths[key], anchor="center")
+        self.table.grid(row=0, column=0, sticky="nsew")
+        ttk.Scrollbar(results, command=self.table.yview).grid(row=0, column=1, sticky="ns")
+        self.table.configure(yscrollcommand=lambda first, last: None)
+
+        footer = ttk.Frame(results, style="Panel.TFrame")
+        footer.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        footer.columnconfigure(0, weight=1)
+        self.recommendation = ttk.Label(
+            footer,
+            text="No benchmark result yet.",
+            style="Body.TLabel",
+        )
+        self.recommendation.grid(row=0, column=0, sticky="w")
+
+        self.apply_button = ttk.Button(
+            footer,
+            text="APPLY BEST",
+            style="Secondary.TButton",
+            state="disabled",
+            command=self._apply_best,
+        )
+        self.apply_button.grid(row=0, column=1, sticky="e")
+
+        self.best_result: BenchmarkResult | None = None
+        self.running = False
+
+    def _parse_layers(self) -> list[int]:
+        values: list[int] = []
+        for raw in self.layers.get().split(","):
+            raw = raw.strip()
+            if not raw:
+                continue
+            value = int(raw)
+            if value < 0 or value > 200:
+                raise ValueError("GPU layer values must be between 0 and 200.")
+            if value not in values:
+                values.append(value)
+        if not values:
+            raise ValueError("Enter at least one GPU layer value.")
+        return values
+
+    def _start(self) -> None:
+        if self.running:
+            return
+        if self.app.runtime.server_running():
+            messagebox.showwarning(
+                "AgentFoundry",
+                "Stop the main llama.cpp runtime before benchmarking so VRAM measurements are not distorted.",
+            )
+            return
+
+        try:
+            values = self._parse_layers()
+            profile = self.app.current_profile()
+        except Exception as exc:
+            messagebox.showerror("AgentFoundry", str(exc))
+            return
+
+        self.running = True
+        self.best_result = None
+        self.apply_button.configure(state="disabled")
+        for item in self.table.get_children():
+            self.table.delete(item)
+        self.state_label.configure(text="Apollo is benchmarking…")
+        self.recommendation.configure(text="Testing stable configurations…")
+
+        def log(message: str) -> None:
+            self.app.log_queue.put(message)
+
+        runner = BenchmarkRunner(log=log)
+
+        def on_result(result: BenchmarkResult) -> None:
+            self.after(0, lambda result=result: self._append_result(result))
+
+        def worker() -> None:
+            try:
+                results = runner.run_many(profile, values, progress=on_result)
+                best = select_best_result(results)
+                self.after(0, lambda: self._finish(best))
+            except Exception as exc:
+                self.after(0, lambda exc=exc: self._fail(exc))
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _append_result(self, result: BenchmarkResult) -> None:
+        self.table.insert(
+            "",
+            "end",
+            values=(
+                result.gpu_layers,
+                result.status,
+                f"{result.latency_seconds:.2f}s" if result.stable else "—",
+                result.completion_tokens if result.stable else "—",
+                f"{result.tokens_per_second:.2f}" if result.stable else "—",
+            ),
+        )
+
+    def _finish(self, best: BenchmarkResult | None) -> None:
+        self.running = False
+        self.best_result = best
+        if best is None:
+            self.state_label.configure(text="Benchmark finished: no stable configuration found.")
+            self.recommendation.configure(text="No stable result. Keep the current profile and inspect the logs.")
+            self.apply_button.configure(state="disabled")
+            return
+
+        self.state_label.configure(text="Benchmark complete.")
+        self.recommendation.configure(
+            text=(
+                f"Fastest stable result: {best.gpu_layers} GPU layers · "
+                f"{best.latency_seconds:.2f}s · {best.tokens_per_second:.2f} approximate tok/s"
+            )
+        )
+        self.apply_button.configure(state="normal")
+
+    def _fail(self, exc: Exception) -> None:
+        self.running = False
+        self.state_label.configure(text="Benchmark failed.")
+        self.recommendation.configure(text=str(exc))
+        self.apply_button.configure(state="disabled")
+        self.app.log_queue.put(f"[Apollo] Benchmark failed: {exc}")
+
+    def _apply_best(self) -> None:
+        if self.best_result is None:
+            return
+        self.app.gpu_layers.set(str(self.best_result.gpu_layers))
+        self.app.log_queue.put(
+            f"[Apollo] Applied benchmark recommendation: {self.best_result.gpu_layers} GPU layers."
+        )
 
 
 class HardwareScreen(BaseScreen):
