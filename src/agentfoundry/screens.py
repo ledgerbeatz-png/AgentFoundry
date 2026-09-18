@@ -7,6 +7,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from .hardware import detect_hardware, recommend_runtime
 from .runtime import RuntimeProfile
 from .theme import COLORS
 
@@ -217,6 +218,107 @@ class HermesScreen(BaseScreen):
 
     def refresh(self) -> None:
         self.status_label.configure(text="Hermes running" if self.app.runtime.hermes_running() else "Hermes idle")
+
+
+class HardwareScreen(BaseScreen):
+    def __init__(self, master: tk.Misc, app: "AgentFoundryApp") -> None:
+        super().__init__(master, app, "Forge Hardware", "Know the machine behind the model.")
+
+        body = ttk.Frame(self, style="Root.TFrame")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
+
+        detected = ttk.LabelFrame(body, text="DETECTED HARDWARE", style="Card.TLabelframe", padding=16)
+        detected.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        detected.columnconfigure(1, weight=1)
+
+        self.hardware_labels: dict[str, ttk.Label] = {}
+        for row, key in enumerate(("OS", "CPU", "RAM", "GPU", "VRAM")):
+            ttk.Label(detected, text=key, style="Muted.TLabel").grid(row=row, column=0, sticky="w", pady=6)
+            label = ttk.Label(detected, text="Detecting…", style="Body.TLabel", wraplength=430)
+            label.grid(row=row, column=1, sticky="w", padx=(14, 0), pady=6)
+            self.hardware_labels[key] = label
+
+        ttk.Button(detected, text="SCAN HARDWARE", style="Secondary.TButton", command=self.refresh).grid(
+            row=6, column=0, columnspan=2, sticky="w", pady=(16, 0)
+        )
+
+        recommend = ttk.LabelFrame(body, text="VULCAN · SAFE RECOMMENDATION", style="Card.TLabelframe", padding=16)
+        recommend.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        recommend.columnconfigure(1, weight=1)
+
+        self.rec_context = ttk.Label(recommend, text="—", style="Metric.TLabel")
+        self.rec_layers = ttk.Label(recommend, text="—", style="Metric.TLabel")
+        self.rec_kv = ttk.Label(recommend, text="—", style="Metric.TLabel")
+
+        ttk.Label(recommend, text="Context", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=6)
+        self.rec_context.grid(row=0, column=1, sticky="w", padx=(14, 0), pady=6)
+        ttk.Label(recommend, text="GPU layers", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=6)
+        self.rec_layers.grid(row=1, column=1, sticky="w", padx=(14, 0), pady=6)
+        ttk.Label(recommend, text="KV cache", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=6)
+        self.rec_kv.grid(row=2, column=1, sticky="w", padx=(14, 0), pady=6)
+
+        self.reason = ttk.Label(
+            recommend,
+            text="Run hardware detection to generate a recommendation.",
+            style="Body.TLabel",
+            wraplength=430,
+            justify="left",
+        )
+        self.reason.grid(row=3, column=0, columnspan=2, sticky="w", pady=(14, 10))
+
+        ttk.Button(
+            recommend,
+            text="APPLY RECOMMENDATION",
+            style="Gold.TButton",
+            command=self._apply,
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+        self.info = None
+        self.recommendation = None
+
+    def refresh(self) -> None:
+        self.info = detect_hardware()
+        self.recommendation = recommend_runtime(self.info, self.app.model_path.get())
+
+        self.hardware_labels["OS"].configure(
+            text=f"{self.info.os_name} {self.info.os_version} · {self.info.architecture}"
+        )
+        self.hardware_labels["CPU"].configure(text=self.info.cpu)
+        self.hardware_labels["RAM"].configure(text=f"{self.info.ram_gb:.1f} GB")
+        self.hardware_labels["GPU"].configure(text=self.info.gpu)
+        self.hardware_labels["VRAM"].configure(
+            text=f"{self.info.vram_gb:.1f} GB" if self.info.vram_gb else "Unknown"
+        )
+
+        self.rec_context.configure(text=f"{self.recommendation.context:,}")
+        self.rec_layers.configure(text=str(self.recommendation.gpu_layers))
+        self.rec_kv.configure(
+            text=f"{self.recommendation.kv_cache_k} / {self.recommendation.kv_cache_v}"
+        )
+        self.reason.configure(text=self.recommendation.reason)
+
+    def _apply(self) -> None:
+        if self.recommendation is None:
+            self.refresh()
+        if self.recommendation is None:
+            return
+
+        if not messagebox.askyesno(
+            "AgentFoundry",
+            "Apply the detected safe runtime recommendation to the current form?\n\n"
+            "Your saved profile will not be overwritten until you explicitly save it.",
+        ):
+            return
+
+        self.app.context.set(str(self.recommendation.context))
+        self.app.gpu_layers.set(str(self.recommendation.gpu_layers))
+        self.app.kv_k.set(self.recommendation.kv_cache_k)
+        self.app.kv_v.set(self.recommendation.kv_cache_v)
+        self.app.log_queue.put(
+            "[AgentFoundry] Hardware recommendation applied to current runtime settings."
+        )
 
 
 class LogsScreen(BaseScreen):
