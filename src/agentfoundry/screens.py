@@ -9,6 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .benchmark import BenchmarkRunner, BenchmarkResult, select_best_result
 from .catalog import load_model_manifests
+from .commerce import Feature, Plan
 from .downloads import DownloadCancelled, DownloadProgress, ResumableDownloader, filename_from_url, human_bytes
 from .hardware import detect_hardware, recommend_runtime
 from .runtime import RuntimeProfile
@@ -721,6 +722,118 @@ class LogsScreen(BaseScreen):
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
         self.text.configure(state="disabled")
+
+
+class LicenseScreen(BaseScreen):
+    def __init__(self, master: tk.Misc, app: "AgentFoundryApp") -> None:
+        super().__init__(
+            master,
+            app,
+            "License",
+            "Unlock the full local-AI workflow when you are ready.",
+        )
+
+        body = ttk.Frame(self, style="Root.TFrame")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
+
+        status = ttk.LabelFrame(body, text="CURRENT PLAN", style="Card.TLabelframe", padding=18)
+        status.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        status.columnconfigure(0, weight=1)
+
+        self.plan_label = ttk.Label(status, text="FREE", style="Metric.TLabel")
+        self.plan_label.grid(row=0, column=0, sticky="w")
+        self.plan_detail = ttk.Label(status, text="", style="Body.TLabel", wraplength=430, justify="left")
+        self.plan_detail.grid(row=1, column=0, sticky="w", pady=(8, 14))
+
+        self.trial_button = ttk.Button(
+            status,
+            text="START 14-DAY PRO TRIAL",
+            style="Gold.TButton",
+            command=app.start_trial,
+        )
+        self.trial_button.grid(row=2, column=0, sticky="w")
+
+        ttk.Label(
+            status,
+            text=(
+                "Pro activation will use a signed server-issued entitlement. "
+                "No master key or payment secret is stored in the desktop app."
+            ),
+            style="Muted.TLabel",
+            wraplength=430,
+            justify="left",
+        ).grid(row=3, column=0, sticky="w", pady=(18, 0))
+
+        features = ttk.LabelFrame(body, text="FREE VS PRO", style="Card.TLabelframe", padding=18)
+        features.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+
+        rows = [
+            ("Hardware compatibility scan", "FREE"),
+            ("Basic model profiles", "FREE"),
+            ("Basic llama.cpp runtime", "FREE"),
+            ("Resumable model downloads", "PRO"),
+            ("Automatic tuning workflow", "PRO"),
+            ("Apollo benchmarks", "PRO"),
+            ("Hermes automation", "PRO"),
+            ("Premium update channel", "PRO"),
+        ]
+        for row, (label, plan) in enumerate(rows):
+            ttk.Label(features, text=label, style="Body.TLabel").grid(row=row, column=0, sticky="w", pady=5)
+            style = "MetricCaption.TLabel" if plan == "FREE" else "Status.TLabel"
+            ttk.Label(features, text=plan, style=style).grid(row=row, column=1, sticky="e", padx=(24, 0), pady=5)
+
+        activation = ttk.LabelFrame(body, text="PRO ACTIVATION", style="Card.TLabelframe", padding=18)
+        activation.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        activation.columnconfigure(1, weight=1)
+
+        self.license_key = tk.StringVar()
+        ttk.Label(activation, text="License key", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Entry(activation, textvariable=self.license_key, show="•").grid(
+            row=0, column=1, sticky="ew", padx=(12, 8)
+        )
+        ttk.Button(
+            activation,
+            text="ACTIVATE",
+            style="Secondary.TButton",
+            command=self._activate_placeholder,
+        ).grid(row=0, column=2)
+        self.activation_status = ttk.Label(
+            activation,
+            text="Activation service not connected yet.",
+            style="Muted.TLabel",
+        )
+        self.activation_status.grid(row=1, column=0, columnspan=3, sticky="w", pady=(10, 0))
+
+    def _activate_placeholder(self) -> None:
+        self.activation_status.configure(
+            text=(
+                "License activation backend is not connected in this development build. "
+                "The client will only accept signed entitlements once the commerce backend is live."
+            )
+        )
+
+    def refresh(self) -> None:
+        plan = self.app.entitlement.effective_plan()
+        if plan == Plan.PRO:
+            self.plan_label.configure(text="PRO")
+            self.plan_detail.configure(text="AgentFoundry Pro is active.")
+            self.trial_button.configure(state="disabled", text="PRO ACTIVE")
+        elif plan == Plan.TRIAL:
+            days = self.app.entitlement.days_left()
+            self.plan_label.configure(text="PRO TRIAL")
+            self.plan_detail.configure(text=f"{days} day(s) remaining in the Pro trial.")
+            self.trial_button.configure(state="disabled", text="TRIAL ACTIVE")
+        else:
+            self.plan_label.configure(text="FREE")
+            if self.app.entitlement.trial_started_at:
+                detail = "Your Pro trial has ended. Free features remain available."
+                self.trial_button.configure(state="disabled", text="TRIAL USED")
+            else:
+                detail = "Free edition. Start the one-time Pro trial to unlock premium workflows."
+                self.trial_button.configure(state="normal", text="START 14-DAY PRO TRIAL")
+            self.plan_detail.configure(text=detail)
 
 
 class SettingsScreen(BaseScreen):
