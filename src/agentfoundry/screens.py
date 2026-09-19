@@ -244,7 +244,7 @@ class BenchmarksScreen(BaseScreen):
         body = ttk.Frame(self, style="Root.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
-        body.rowconfigure(1, weight=1)
+        body.rowconfigure(2, weight=1)
 
         controls = ttk.LabelFrame(body, text="BENCHMARK PLAN", style="Card.TLabelframe", padding=14)
         controls.grid(row=0, column=0, sticky="ew", pady=(0, 12))
@@ -277,13 +277,46 @@ class BenchmarksScreen(BaseScreen):
         self._activity_step = 0
         self._activity_total = 1
 
+        self.result_card = ttk.LabelFrame(body, text="APOLLO RESULT", style="Card.TLabelframe", padding=12)
+        self.result_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        for column in range(5):
+            self.result_card.columnconfigure(column, weight=1)
+
+        self.result_status = ttk.Label(self.result_card, text="WAITING", style="GoldStatus.TLabel")
+        self.result_status.grid(row=0, column=0, sticky="w")
+        self.result_layers = ttk.Label(self.result_card, text="—", style="MetricGold.TLabel")
+        self.result_layers.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(self.result_card, text="GPU LAYERS", style="MetricCaption.TLabel").grid(row=2, column=0, sticky="w")
+
+        self.result_workers = ttk.Label(self.result_card, text="—", style="Metric.TLabel")
+        self.result_workers.grid(row=1, column=1, sticky="w", pady=(4, 0))
+        ttk.Label(self.result_card, text="AI WORKERS", style="MetricCaption.TLabel").grid(row=2, column=1, sticky="w")
+
+        self.result_tps = ttk.Label(self.result_card, text="—", style="Metric.TLabel")
+        self.result_tps.grid(row=1, column=2, sticky="w", pady=(4, 0))
+        ttk.Label(self.result_card, text="TOK/S", style="MetricCaption.TLabel").grid(row=2, column=2, sticky="w")
+
+        self.result_elapsed = ttk.Label(self.result_card, text="—", style="Metric.TLabel")
+        self.result_elapsed.grid(row=1, column=3, sticky="w", pady=(4, 0))
+        ttk.Label(self.result_card, text="COMPLETED", style="MetricCaption.TLabel").grid(row=2, column=3, sticky="w")
+
+        self.verify_button = ttk.Button(
+            self.result_card,
+            text="RUN DEEP VERIFICATION",
+            style="Secondary.TButton",
+            state="disabled",
+            command=lambda: self._start("deep"),
+        )
+        self.verify_button.grid(row=1, column=4, rowspan=2, sticky="e", padx=(12, 0))
+        self.refresh_saved_result()
+
         results = ttk.LabelFrame(body, text="RESULTS", style="Card.TLabelframe", padding=10)
-        results.grid(row=1, column=0, sticky="nsew")
+        results.grid(row=2, column=0, sticky="nsew")
         results.columnconfigure(0, weight=1)
         results.rowconfigure(0, weight=1)
 
         columns = ("layers", "status", "latency", "tokens", "tps")
-        self.table = ttk.Treeview(results, columns=columns, show="headings", height=10)
+        self.table = ttk.Treeview(results, columns=columns, show="headings", height=6)
         headings = {
             "layers": "GPU layers",
             "status": "Status",
@@ -316,7 +349,7 @@ class BenchmarksScreen(BaseScreen):
         self.details = tk.Text(results, height=6, wrap="word", state="disabled")
 
         concurrency = ttk.LabelFrame(body, text="AI WORKERS · CONCURRENCY", style="Card.TLabelframe", padding=10)
-        concurrency.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        concurrency.grid(row=3, column=0, sticky="ew", pady=(12, 0))
         concurrency.columnconfigure(0, weight=1)
         self.worker_state = ttk.Label(
             concurrency,
@@ -340,6 +373,73 @@ class BenchmarksScreen(BaseScreen):
         self.running = False
         self.events = queue.Queue()
         self.cancelled = threading.Event()
+
+    @staticmethod
+    def _format_elapsed(seconds: int | float | None) -> str:
+        if seconds is None:
+            return "saved"
+        seconds = max(0, int(seconds))
+        minutes, remaining = divmod(seconds, 60)
+        return f"{minutes}m {remaining:02d}s" if minutes else f"{remaining}s"
+
+    def refresh_saved_result(self):
+        status = self.app.settings.apollo_status
+        layers = self.app.settings.apollo_gpu_layers
+        workers = self.app.settings.apollo_workers
+        tps = self.app.settings.apollo_tokens_per_second
+        if status in {"VERIFIED", "QUICK READY"} and layers is not None:
+            self.result_status.configure(
+                text=("✓ VERIFIED" if status == "VERIFIED" else "⚡ QUICK READY"),
+                style=("Success.TLabel" if status == "VERIFIED" else "GoldStatus.TLabel"),
+            )
+            self.result_layers.configure(text=str(layers))
+            self.result_workers.configure(text=str(workers) if workers is not None else "—")
+            self.result_tps.configure(text=f"{tps:.2f}" if tps is not None else "—")
+            self.result_elapsed.configure(text="saved")
+            if status == "QUICK READY":
+                self.verify_button.configure(text="RUN DEEP VERIFICATION", state="normal")
+            else:
+                self.verify_button.configure(text="✓ VERIFIED", state="disabled")
+        else:
+            self.result_status.configure(text=status or "WAITING", style="GoldStatus.TLabel")
+            self.result_layers.configure(text="—")
+            self.result_workers.configure(text="—")
+            self.result_tps.configure(text="—")
+            self.result_elapsed.configure(text="—")
+            self.verify_button.configure(text="RUN DEEP VERIFICATION", state="disabled")
+
+    def _set_result_card(self, result, elapsed):
+        status = result.status
+        self.result_status.configure(
+            text=("✓ VERIFIED" if status == "VERIFIED" else "⚡ QUICK READY" if status == "QUICK READY" else status),
+            style=("Success.TLabel" if status == "VERIFIED" else "GoldStatus.TLabel"),
+        )
+        self.result_layers.configure(text=str(result.profile.get("gpu_layers", "—")))
+        workers = result.workers["recommended_concurrency"] if result.workers else None
+        self.result_workers.configure(text=str(workers) if workers is not None else "—")
+        tps = result.verification["tokens_per_second"] if result.verification else None
+        self.result_tps.configure(text=f"{tps:.2f}" if tps is not None else "—")
+        self.result_elapsed.configure(text=self._format_elapsed(elapsed))
+        if status == "QUICK READY":
+            self.verify_button.configure(text="RUN DEEP VERIFICATION", state="normal")
+        elif status == "VERIFIED":
+            self.verify_button.configure(text="✓ VERIFIED", state="disabled")
+        else:
+            self.verify_button.configure(text="RETEST REQUIRED", state="disabled")
+
+    def _apply_tuned_profile(self, profile):
+        values = (
+            (self.app.model_path, profile["model_path"]),
+            (self.app.context, profile["context"]),
+            (self.app.gpu_layers, profile["gpu_layers"]),
+            (self.app.kv_k, profile["kv_cache_k"]),
+            (self.app.kv_v, profile["kv_cache_v"]),
+            (self.app.rope_scale, profile["rope_scale"]),
+            (self.app.yarn_orig_ctx, profile["yarn_orig_ctx"]),
+        )
+        for variable, value in values:
+            variable.set(str(value))
+        self.app.save_profile()
 
     def _toggle_details(self):
         if self.details.winfo_ismapped():
@@ -384,6 +484,13 @@ class BenchmarksScreen(BaseScreen):
         self.deep_button.configure(state="disabled")
         self.cancel_button.configure(state="normal")
         self.recommendation.configure(text="Checking hardware, model and available memory…")
+        self.result_status.configure(text="● RUNNING", style="GoldStatus.TLabel")
+        self.result_layers.configure(text="—")
+        self.result_workers.configure(text="—")
+        self.result_tps.configure(text="—")
+        self.result_elapsed.configure(text="—")
+        self.verify_button.configure(state="disabled")
+        self.worker_state.configure(text="Waiting for GPU selection before AI worker optimization.")
         self.details.configure(state="normal")
         self.details.delete("1.0", "end")
         self.details.insert("end", f"APOLLO MODE = {mode.upper()}\n")
@@ -458,6 +565,9 @@ class BenchmarksScreen(BaseScreen):
         self.state_label.configure(text="RETEST REQUIRED · Auto-Tune did not complete")
         self.recommendation.configure(text=message, wraplength=720)
         self.activity_detail.configure(text="Current profile preserved. See details for diagnostics.")
+        self.result_status.configure(text="RETEST REQUIRED", style="GoldStatus.TLabel")
+        self.result_elapsed.configure(text=self._format_elapsed(time.monotonic() - self.started))
+        self.verify_button.configure(text="RETEST REQUIRED", state="disabled")
         self.app.settings.apollo_status = "RETEST REQUIRED"
         self.app._apollo_saved_status = "RETEST REQUIRED"
         self.app.settings.apollo_last_attempt = {"status": "RETEST REQUIRED", "reason": message}
@@ -488,11 +598,12 @@ class BenchmarksScreen(BaseScreen):
             self.app.settings = updated
             self.app._apollo_saved_status = result.status
             if result.status in {"VERIFIED", "QUICK READY"}:
-                self.app.gpu_layers.set(str(updated.apollo_gpu_layers))
+                self._apply_tuned_profile(result.profile)
                 self.app.apollo_gpu_layers = updated.apollo_gpu_layers
                 self.app.apollo_workers = updated.apollo_workers
                 self.app.apollo_tokens_per_second = updated.apollo_tokens_per_second
                 updated.apollo_status = result.status
+                self.app._apollo_saved_status = result.status
             if result.workers:
                 for item in result.workers["results"]:
                     self.worker_table.insert("", "end", values=(item["concurrency"],
@@ -503,6 +614,7 @@ class BenchmarksScreen(BaseScreen):
             self.activity_var.set(100)
             self.state_label.configure(text=f"{result.status} · Elapsed {int(time.monotonic() - self.started)}s")
             self.recommendation.configure(text=result.reason, wraplength=720)
+            self._set_result_card(result, time.monotonic() - self.started)
             self.activity_detail.configure(text=(
                 "✓ VERIFIED · Profile saved and applied."
                 if result.status == "VERIFIED"
