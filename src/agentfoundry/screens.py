@@ -479,7 +479,7 @@ class BenchmarksScreen(BaseScreen):
         self.activity_detail.configure(text=("QUICK MODE" if quick else "DEEP MODE") + " · Hardware preflight…")
         self.activity_var.set(0)
         self._activity_step = 0
-        self._activity_total = len(set(candidates)) if candidates else 4
+        self._activity_total = len(set(candidates)) if candidates else (3 if quick else 4)
         self.quick_button.configure(state="disabled")
         self.deep_button.configure(state="disabled")
         self.cancel_button.configure(state="normal")
