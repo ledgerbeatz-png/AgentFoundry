@@ -940,7 +940,7 @@ class SelfSetupScreen(BaseScreen):
         if self.app.settings.apollo_status not in {"VERIFIED", "QUICK READY"}:
             messagebox.showwarning("Forge", "Apollo must produce QUICK READY or VERIFIED before optimized launch.")
             return
-        if self.app.runtime.server_running():
+        if self.app.runtime.endpoint_ready(self.app.current_profile()):
             self.start_optimized_button.configure(text="RUNTIME RUNNING", state="disabled")
             return
 
@@ -1031,9 +1031,10 @@ class SelfSetupScreen(BaseScreen):
                 )
                 self.solana_prepare_button.configure(text="PREPARE SOLANA RESEARCH", state="normal")
                 return
-            if not self.app.runtime.server_running():
+            check_profile = started_profile if started_profile is not None else self.app.current_profile()
+            if not self.app.runtime.endpoint_ready(check_profile):
                 self.solana_pack_status.configure(
-                    text="Runtime did not stay online. Check Logs before preparing the pack again."
+                    text="Runtime endpoint is not reachable. AgentFoundry can retry automatically."
                 )
                 self.solana_prepare_button.configure(text="PREPARE SOLANA RESEARCH", state="normal")
                 return
@@ -1059,7 +1060,7 @@ class SelfSetupScreen(BaseScreen):
                 f"[Pack] Solana Research workspace READY · {layer_note} · live market discovery enabled."
             )
 
-        if self.app.runtime.server_running():
+        if self.app.runtime.endpoint_ready(self.app.current_profile()):
             finish(self.app.current_profile(), None)
         else:
             profile = self.app.current_profile()
@@ -1081,9 +1082,42 @@ class SelfSetupScreen(BaseScreen):
             threading.Thread(target=worker, daemon=True).start()
 
     def _scan_solana_market(self) -> None:
-        if not self.app.runtime.server_running():
-            messagebox.showwarning("Solana Research", "Start or prepare the optimized runtime first.")
+        profile = self.app.current_profile()
+        if not self.app.runtime.endpoint_ready(profile):
+            self.solana_scan_button.configure(text="STARTING RUNTIME…", state="disabled")
+            self.market_status.configure(
+                text="Runtime endpoint is offline · AgentFoundry is restarting it automatically before the scan…"
+            )
+            parallel = self.app.apollo_workers or 1
+
+            def start_worker() -> None:
+                try:
+                    started = self.app.runtime.start_server_with_gpu_fallback(
+                        profile,
+                        parallel=parallel,
+                        step=4,
+                        max_fallbacks=3,
+                        ready_timeout=45,
+                    )
+                    self.after(0, lambda: resume(started, None))
+                except Exception as exc:
+                    self.after(0, lambda: resume(None, str(exc)))
+
+            def resume(started, error) -> None:
+                if error:
+                    self.solana_scan_button.configure(text="SCAN + RISK CHECK", state="normal")
+                    self.market_status.configure(text=f"Runtime restart failed · {error}")
+                    return
+                self.app.endpoint.set(started.base_url)
+                self.solana_pack_status.configure(
+                    text=f"✓ PAPER WORKSPACE READY · runtime {started.gpu_layers} GPU layers · "
+                         "deterministic risk gates active · live market discovery available."
+                )
+                self.after(100, self._scan_solana_market)
+
+            threading.Thread(target=start_worker, daemon=True).start()
             return
+
         self.solana_scan_button.configure(text="SCANNING + RISK…", state="disabled")
         self.market_status.configure(
             text="Discovering live Solana candidates, then applying read-only RugCheck enrichment and hard risk gates…"
