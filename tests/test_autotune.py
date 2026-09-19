@@ -115,7 +115,7 @@ def tuning(monkeypatch, tmp_path):
     model = tmp_path / "qwen-IQ4_XS.gguf"
     model.write_bytes(b"GGUF")
     profile = RuntimeProfile(str(model), context=32768)
-    hardware = HardwareInfo("Windows", "11", "AMD64", "CPU", 16, "GPU", 8)
+    hardware = HardwareInfo("Windows", "11", "AMD64", "CPU", 15.7, "GPU", 8)
     for name, implementation in {
         "assert_idle": lambda _: None,
         "detect_hardware": lambda: hardware,
@@ -139,6 +139,21 @@ def tuning(monkeypatch, tmp_path):
     monkeypatch.setattr(autotune.ConcurrencyBenchmarkRunner, "run", lambda *_args, **_kwargs:
         ConcurrencyBenchmarkSummary([ConcurrencyResult(2, 10, .2, 8)], 2))
     return runner, profile, sessions
+
+
+def test_auto_tune_caps_unsafe_context_to_hardware_recommendation(tuning, monkeypatch):
+    runner, profile, _ = tuning
+    seen_contexts = []
+
+    def run_many(candidate_profile, *_args, **_kwargs):
+        seen_contexts.append(candidate_profile.context)
+        return [measured(12, 8), measured(20, 10)]
+
+    monkeypatch.setattr(runner.gpu, "run_many", run_many)
+    result = runner.run(replace(profile, context=65536))
+
+    assert seen_contexts == [32768]
+    assert result.profile["context"] == 32768
 
 
 def test_full_auto_tune_uses_winner_for_workers(tuning):
