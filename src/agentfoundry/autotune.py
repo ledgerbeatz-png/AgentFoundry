@@ -30,8 +30,10 @@ def confidence(results, verification, quick, telemetry_complete, previous=None, 
             and previous.get("gpu_layers") == best.gpu_layers and previous.get("tokens_per_second", 0) > 0
             and abs(best.tokens_per_second / previous["tokens_per_second"] - 1) > .30):
         return "UNCERTAIN", "Throughput differs by more than 30% from the matching saved measurement."
-    if quick or any(len(item.samples) < 3 for item in [*results, verification]):
-        return "UNCERTAIN", "Quick Tune is provisional. Run Deep Benchmark to verify."
+    if quick:
+        return "QUICK READY", "Quick Tune completed with a consistent provisional configuration. Deep Benchmark can verify it later."
+    if any(len(item.samples) < 3 for item in [*results, verification]):
+        return "UNCERTAIN", "Deep verification has too few repeated samples."
     if not telemetry_complete:
         return "UNCERTAIN", "Hardware or memory telemetry is incomplete."
     return "VERIFIED", "Stable repeated measurements and independent winner confirmation."
@@ -98,7 +100,8 @@ class AutoTuneRunner:
         self.log(f"Available RAM {baseline.available_ram_gb} GB · VRAM {baseline.free_vram_mb} MiB")
         if candidates is None:
             center = recommendation.gpu_layers
-            candidates = sorted({max(0, center + offset) for offset in (-8, -4, 0, 4)}) if center else [0]
+            offsets = (-4, 0, 4) if quick else (-8, -4, 0, 4)
+            candidates = sorted({max(0, center + offset) for offset in offsets}) if center else [0]
         if not candidates or any(type(value) is not int or not 0 <= value <= 200 for value in candidates):
             raise ValueError("GPU candidates must be between 0 and 200.")
         results = self.gpu.run_many(tuning_profile, list(dict.fromkeys(candidates)), progress=progress, quick=quick)
@@ -108,7 +111,7 @@ class AutoTuneRunner:
         if best is not None:
             selected = replace(profile, gpu_layers=best.gpu_layers)
             self.log("Verify configuration · reloading and confirming the winner")
-            verification = self.gpu.run_one(selected, best.gpu_layers, max_tokens=96 if quick else 192,
+            verification = self.gpu.run_one(selected, best.gpu_layers, max_tokens=48 if quick else 192,
                                              measured_runs=1 if quick else 3)
             if verification.stable:
                 self.log("AI worker optimization · temporary runtime with selected GPU settings")
