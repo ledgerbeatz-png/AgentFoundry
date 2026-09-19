@@ -104,7 +104,7 @@ class BenchmarkRunner:
         return False
 
     @contextmanager
-    def session(self, profile: RuntimeProfile):
+    def session(self, profile: RuntimeProfile, parallel: int = 1):
         """One owned server, captured diagnostics and confirmed cleanup on every exit."""
         assert_idle(self.test_port)
         if self.baseline is None:
@@ -113,12 +113,19 @@ class BenchmarkRunner:
         self.check_cancel()
         assert_idle(self.test_port)
         test_profile = replace(profile, host="127.0.0.1", port=self.test_port)
-        command = [self._find_llama_server(), *RuntimeController().build_llama_args(test_profile)]
+        command = [
+            self._find_llama_server(),
+            *RuntimeController().build_llama_args(test_profile),
+            "--parallel", str(max(1, parallel)),
+        ]
         with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as output:
             process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT,
                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             try:
-                self.log(f"Loading model · GPU {profile.gpu_layers} · context {profile.context:,}")
+                self.log(
+                    f"Loading model · GPU {profile.gpu_layers} · context {profile.context:,} · "
+                    f"parallel {max(1, parallel)}"
+                )
                 if not self._wait_ready(process, test_profile.base_url):
                     raise RuntimeError("Benchmark server failed to become ready")
                 if process.poll() is not None:
@@ -159,7 +166,7 @@ class BenchmarkRunner:
             return BenchmarkResult(gpu_layers=gpu_layers, stable=False, error=f"Model not found: {model}")
 
         try:
-            with self.session(replace(profile, gpu_layers=gpu_layers)) as test_profile:
+            with self.session(replace(profile, gpu_layers=gpu_layers), parallel=1) as test_profile:
                 models = RuntimeController().get_models(test_profile)
                 if not models:
                     raise ValueError("Benchmark endpoint has no model")
