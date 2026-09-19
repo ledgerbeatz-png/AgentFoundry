@@ -216,7 +216,7 @@ class BenchmarkRunner:
             result = self.run_one(
                 profile,
                 layers,
-                max_tokens=96 if quick else 192,
+                max_tokens=48 if quick else 192,
                 measured_runs=1 if quick else 3,
             )
             results.append(result)
@@ -277,7 +277,7 @@ class ConcurrencyBenchmarkRunner:
         # Warm the live endpoint before comparing worker counts.
         self._one(profile.base_url, model_id, "Reply briefly: warmup", 24)
         cycles = 1 if quick else 3
-        max_tokens = 64 if quick else 128
+        max_tokens = 32 if quick else 128
         for workers in concurrency_values:
             self.log(f"[Apollo] Testing concurrency {workers} across {cycles} cycles…")
             walls: list[float] = []
