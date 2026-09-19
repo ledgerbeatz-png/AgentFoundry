@@ -22,7 +22,7 @@ class PaperAnalysis:
 class LocalQwenAnalyst:
     """Local OpenAI-compatible analyst for PAPER research only."""
 
-    def __init__(self, base_url: str, model_id: str, timeout: float = 45.0, opener=None) -> None:
+    def __init__(self, base_url: str, model_id: str, timeout: float = 120.0, opener=None) -> None:
         self.base_url = base_url.rstrip("/")
         self.model_id = model_id
         self.timeout = timeout
@@ -123,7 +123,7 @@ class LocalQwenAnalyst:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.1,
-            "max_tokens": 240,
+            "max_tokens": 128,
             "seed": 42,
         }
         response = self._post_json(payload)
