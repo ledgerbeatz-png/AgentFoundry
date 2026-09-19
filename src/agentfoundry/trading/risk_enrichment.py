@@ -54,7 +54,8 @@ class SolanaRpcRiskClient:
             "https://solana-rpc.publicnode.com",
         ]
         self.rpc_urls = []
-        for url in ([configured] if configured else []) + defaults:
+        source_urls = [configured] if configured else defaults
+        for url in source_urls:
             if url and url not in self.rpc_urls:
                 self.rpc_urls.append(url)
         self.timeout = timeout
