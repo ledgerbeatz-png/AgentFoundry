@@ -1643,14 +1643,19 @@ class SettingsScreen(BaseScreen):
             messagebox.showerror("AgentFoundry", str(exc))
             return
 
-        self.app.settings.llama_server_path = self.llama_path.get().strip()
+        old_llama = self.app.settings.llama_server_path
+        new_llama = self.llama_path.get().strip()
+        self.app.settings.llama_server_path = new_llama
         self.app.settings.hermes_path = self.hermes_path.get().strip()
         self.app.settings.model_dir = self.model_dir.get().strip()
         self.app.settings.solana_rpc_url = self.solana_rpc_url.get().strip()
         self.app.settings.host = host
         self.app.settings.port = port
-        self.app.save_app_settings()
-        self.status_text.set("Settings saved.")
+        self.app.save_app_settings(invalidate_apollo=(old_llama != new_llama))
+        self.status_text.set(
+            "Settings saved. Apollo retest required." if old_llama != new_llama
+            else "Settings saved. Apollo optimization preserved."
+        )
 
     def refresh(self) -> None:
         self.llama_path.set(self.app.settings.llama_server_path)
