@@ -22,6 +22,7 @@ from .self_setup import build_self_setup_plan
 from .runtime import RuntimeProfile
 from .settings import APP_DIR, detect_runtime_paths, save_settings
 from .theme import COLORS
+from .trading.market_data import DexScreenerSolanaFeed
 from .trading.memory import TradeMemory
 
 
@@ -870,11 +871,29 @@ class SelfSetupScreen(BaseScreen):
             command=self._prepare_solana_research,
         )
         self.solana_prepare_button.pack(side="left")
+        self.solana_scan_button = ttk.Button(
+            pack_actions,
+            text="SCAN LIVE MARKET",
+            style="Secondary.TButton",
+            state="disabled",
+            command=self._scan_solana_market,
+        )
+        self.solana_scan_button.pack(side="left", padx=(8, 0))
         ttk.Label(
             pack_actions,
             text="No wallet signing · no live orders · deterministic risk gates",
             style="Muted.TLabel",
         ).pack(side="right")
+
+        self.market_status = ttk.Label(
+            self.solana_card,
+            text="Market discovery idle.",
+            style="Muted.TLabel",
+            justify="left",
+            wraplength=1000,
+        )
+        self.market_status.pack(anchor="w", pady=(12, 0))
+        self.market_candidates = []
         self.refresh_apollo_result()
 
     def refresh_apollo_result(self) -> None:
@@ -898,6 +917,8 @@ class SelfSetupScreen(BaseScreen):
             )
             self.start_optimized_button.configure(state="normal")
             self.solana_prepare_button.configure(state="normal")
+            if self.app.runtime.server_running():
+                self.solana_scan_button.configure(state="normal")
             self.solana_pack_status.configure(
                 text="READY TO PREPARE · Apollo profile available · local model selected · PAPER ONLY."
             )
@@ -907,6 +928,7 @@ class SelfSetupScreen(BaseScreen):
             )
             self.start_optimized_button.configure(state="disabled")
             self.solana_prepare_button.configure(state="disabled")
+            self.solana_scan_button.configure(state="disabled")
             self.solana_pack_status.configure(
                 text="Waiting for QUICK READY or VERIFIED Apollo profile before preparing Solana Research."
             )
@@ -966,7 +988,8 @@ class SelfSetupScreen(BaseScreen):
                     )
                 )
                 self.solana_prepare_button.configure(text="PAPER WORKSPACE READY", state="disabled")
-                self.app.log_queue.put("[Pack] Solana Research workspace READY · market feed connection is the next step.")
+                self.solana_scan_button.configure(state="normal")
+                self.app.log_queue.put("[Pack] Solana Research workspace READY · live market discovery enabled.")
             else:
                 self.solana_pack_status.configure(
                     text="Runtime did not stay online. Check Logs before preparing the pack again."
@@ -975,6 +998,49 @@ class SelfSetupScreen(BaseScreen):
 
         self.after(1800, finish)
 
+    def _scan_solana_market(self) -> None:
+        if not self.app.runtime.server_running():
+            messagebox.showwarning("Solana Research", "Start or prepare the optimized runtime first.")
+            return
+        self.solana_scan_button.configure(text="SCANNING…", state="disabled")
+        self.market_status.configure(text="Scanning recent Solana token profiles and market pairs…")
+
+        def worker() -> None:
+            try:
+                candidates = DexScreenerSolanaFeed().discover_latest(limit=12)
+                self.after(0, lambda: finish(candidates, None))
+            except Exception as exc:
+                self.after(0, lambda: finish([], str(exc)))
+
+        def finish(candidates, error) -> None:
+            self.solana_scan_button.configure(text="SCAN LIVE MARKET", state="normal")
+            if error:
+                self.market_status.configure(text=f"Market scan failed: {error}")
+                self.app.log_queue.put(f"[Pack] Solana market scan failed: {error}")
+                return
+            self.market_candidates = candidates
+            if not candidates:
+                self.market_status.configure(text="No current Solana candidates returned by the discovery feed.")
+                return
+            lines = [
+                "LIVE DISCOVERY · market data only · risk enrichment still required before PAPER BUY/IGNORE",
+            ]
+            for candidate in candidates[:5]:
+                market_cap = (
+                    "$" + format(candidate.market_cap_usd, ",.0f")
+                    if candidate.market_cap_usd is not None else "n/a"
+                )
+                lines.append(
+                    f"{candidate.symbol:<10} · liq " + "$" + format(candidate.liquidity_usd, ",.0f") +
+                    f" · MC {market_cap} · 5m B/S {candidate.buys_5m}/{candidate.sells_5m}"
+                )
+            self.market_status.configure(text="\n".join(lines))
+            self.app.log_queue.put(
+                f"[Pack] Solana live discovery returned {len(candidates)} market candidate(s). "
+                "Risk enrichment required before deterministic gates."
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
     def _analyze(self) -> None:
         self.info = detect_hardware()
         self.plan = build_self_setup_plan(self.info, self.app.model_path.get())
