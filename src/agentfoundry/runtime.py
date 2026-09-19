@@ -7,7 +7,7 @@ import subprocess
 import threading
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Queue
 from typing import Optional
@@ -126,6 +126,58 @@ class RuntimeController:
         )
         thread.start()
         self._log_threads.append(thread)
+
+    def start_server_with_gpu_fallback(
+        self,
+        profile: RuntimeProfile,
+        parallel: int | None = None,
+        step: int = 4,
+        max_fallbacks: int = 3,
+        ready_timeout: float = 45.0,
+    ) -> RuntimeProfile:
+        """Start the runtime and automatically reduce GPU offload if the server cannot load.
+
+        Apollo's saved layer count remains the target profile. This launch-only fallback
+        handles temporary VRAM pressure without destroying the benchmark result.
+        """
+        step = max(1, int(step))
+        max_fallbacks = max(0, int(max_fallbacks))
+        candidates = []
+        for index in range(max_fallbacks + 1):
+            layers = max(0, profile.gpu_layers - index * step)
+            if layers not in candidates:
+                candidates.append(layers)
+
+        attempted = []
+        for layers in candidates:
+            candidate = replace(profile, gpu_layers=layers)
+            attempted.append(layers)
+            if layers != profile.gpu_layers:
+                self.log(
+                    f"[AgentFoundry] Runtime recovery · retrying with {layers} GPU layers "
+                    f"(Apollo target {profile.gpu_layers})."
+                )
+            self.start_server(candidate, parallel=parallel)
+            if self.wait_for_server(candidate, timeout=ready_timeout):
+                if layers != profile.gpu_layers:
+                    self.log(
+                        f"[AgentFoundry] Runtime adapted successfully · {layers} GPU layers "
+                        f"(Apollo target remains {profile.gpu_layers})."
+                    )
+                return candidate
+
+            process = self.server_process
+            if process and process.poll() is None:
+                self.stop_server()
+            self.server_process = None
+            # Give Vulkan/CUDA a moment to release allocations before the next attempt.
+            time.sleep(1.5)
+
+        raise RuntimeError(
+            "Runtime could not start after GPU fallback attempts: "
+            + ", ".join(str(value) for value in attempted)
+            + " layers. Check Logs and available VRAM."
+        )
 
     def wait_for_server(self, profile: RuntimeProfile, timeout: float = 120.0) -> bool:
         deadline = time.monotonic() + timeout
