@@ -1044,6 +1044,11 @@ class SelfSetupScreen(BaseScreen):
                 candidate = assessment.candidate
                 icon = "✓" if assessment.status == "PASS" else "✕"
                 reasons = ", ".join(assessment.decision.reasons) if assessment.decision.reasons else "hard gates passed"
+                rpc_note = next(
+                    (warning for warning in reversed(assessment.evidence.warnings)
+                     if warning.startswith("solana_rpc_fallback_")),
+                    "",
+                )
                 top10 = (
                     f"{assessment.evidence.top10_holder_pct:.1f}%"
                     if assessment.evidence.top10_holder_pct is not None else "n/a"
@@ -1052,11 +1057,14 @@ class SelfSetupScreen(BaseScreen):
                     f"{assessment.evidence.developer_holding_pct:.1f}%"
                     if assessment.evidence.developer_holding_pct is not None else "n/a"
                 )
-                lines.append(
+                line = (
                     f"{icon} {assessment.status:<5} {candidate.symbol:<10} · liq $"
                     + format(candidate.liquidity_usd, ",.0f")
                     + f" · top10 {top10} · dev {developer} · {reasons}"
                 )
+                if rpc_note and ("missing_" in reasons or assessment.status == "PASS"):
+                    line += " · " + rpc_note
+                lines.append(line)
 
             for symbol, error in errors:
                 lines.append(f"! BLOCK {symbol:<10} · risk report unavailable · {error}")
