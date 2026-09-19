@@ -41,6 +41,10 @@ class AgentFoundryApp(tk.Tk):
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.settings = load_settings()
+        self.tuning_active = False
+        self._apollo_saved_status = self.settings.apollo_status
+        self.settings.apollo_status = "RETEST REQUIRED"
+        self._apollo_check = 0
         try:
             entitlement_plan = Plan(self.settings.plan)
         except ValueError:
@@ -68,7 +72,7 @@ class AgentFoundryApp(tk.Tk):
         self.endpoint = tk.StringVar(value=f"http://{self.settings.host}:{self.settings.port}/v1")
         self.status = tk.StringVar(value="IDLE")
         self.apollo_gpu_layers: int | None = self.settings.apollo_gpu_layers
-        self.apollo_workers: int | None = self.settings.apollo_workers
+        self.apollo_workers: int | None = None
         self.apollo_tokens_per_second: float | None = self.settings.apollo_tokens_per_second
 
         self.nav_buttons: dict[str, ttk.Button] = {}
@@ -77,6 +81,11 @@ class AgentFoundryApp(tk.Tk):
         self._build_shell()
         self._build_screens()
         self.load_selected_profile()
+        self._validate_saved_tune(restore=True)
+        for variable in (self.model_path, self.context, self.gpu_layers, self.kv_k, self.kv_v,
+                         self.rope_scale, self.yarn_orig_ctx):
+            variable.trace_add("write", self._profile_changed)
+        self.protocol("WM_DELETE_WINDOW", self._close)
         self.show_screen("home")
         self.after(150, self._poll_logs)
         self.after(1000, self._refresh_status)
@@ -85,6 +94,69 @@ class AgentFoundryApp(tk.Tk):
 
     def open_setup_wizard(self) -> None:
         FirstRunWizard(self)
+
+    def _close(self):
+        if self.tuning_active:
+            self.screens["benchmarks"]._cancel()
+            self.after(250, self._close)
+        else:
+            self.destroy()
+
+    def _profile_changed(self, *_):
+        self._apollo_check += 1
+        self.settings.apollo_status = "RETEST REQUIRED"
+        self.apollo_workers = None
+        forge = self.screens.get("self_setup")
+        if forge:
+            forge.refresh_apollo_result()
+        generation = self._apollo_check
+        self.after(500, lambda: self._validate_saved_tune() if generation == self._apollo_check else None)
+
+    def _validate_saved_tune(self, restore=False):
+        """Read system identity off the UI thread before reusing a saved optimization."""
+        if self.tuning_active or self._apollo_saved_status != "VERIFIED" or not self.settings.apollo_profile:
+            return
+        try:
+            current = self.current_profile()
+            candidate = RuntimeProfile(**self.settings.apollo_profile) if restore else current
+        except (TypeError, ValueError):
+            return
+        generation = self._apollo_check
+        result = queue.Queue()
+        from .benchmark import BenchmarkRunner
+        from .benchmark_environment import fingerprint
+        executable = self.settings.llama_server_path
+        key = self.settings.apollo_fingerprint
+        selected_layers = self.settings.apollo_gpu_layers
+
+        def worker():
+            try:
+                found = BenchmarkRunner(llama_server_path=executable)._find_llama_server()
+                result.put(fingerprint(candidate, found) == key and candidate.gpu_layers == selected_layers)
+            except Exception:
+                result.put(False)
+
+        def finish():
+            if generation != self._apollo_check or self.tuning_active:
+                return
+            try:
+                valid = result.get_nowait()
+            except queue.Empty:
+                self.after(100, finish)
+                return
+            if valid:
+                if restore:
+                    for variable, value in ((self.model_path, candidate.model_path),
+                        (self.context, candidate.context), (self.gpu_layers, candidate.gpu_layers),
+                        (self.kv_k, candidate.kv_cache_k), (self.kv_v, candidate.kv_cache_v),
+                        (self.rope_scale, candidate.rope_scale), (self.yarn_orig_ctx, candidate.yarn_orig_ctx)):
+                        variable.set(str(value))
+                self.settings.apollo_status = "VERIFIED"
+                self.apollo_workers = self.settings.apollo_workers
+            self.screens["self_setup"].refresh_apollo_result()
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(100, finish)
 
     def _build_shell(self) -> None:
         self.columnconfigure(1, weight=1)
@@ -215,6 +287,7 @@ class AgentFoundryApp(tk.Tk):
             home.refresh()
 
     def save_app_settings(self) -> None:
+        self._profile_changed()
         save_settings(self.settings)
         self.runtime.llama_server_path = self.settings.llama_server_path
         self.runtime.hermes_path = self.settings.hermes_path
@@ -230,6 +303,9 @@ class AgentFoundryApp(tk.Tk):
             messagebox.showerror("AgentFoundry", str(exc))
 
     def start_server(self) -> None:
+        if self.tuning_active:
+            messagebox.showinfo("Apollo", "Wait for Auto-Tune to finish or cancel it first.")
+            return
         try:
             profile = self.current_profile()
             self.endpoint.set(profile.base_url)
@@ -247,6 +323,9 @@ class AgentFoundryApp(tk.Tk):
             messagebox.showerror("AgentFoundry", str(exc))
 
     def start_all(self) -> None:
+        if self.tuning_active:
+            messagebox.showinfo("Apollo", "Wait for Auto-Tune to finish or cancel it first.")
+            return
         if not self.feature_available(Feature.HERMES_AUTOMATION):
             self.show_screen("license")
             return

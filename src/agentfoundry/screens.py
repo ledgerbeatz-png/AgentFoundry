@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import platform
+import queue
+import threading
+import time
+from dataclasses import asdict
 import shutil
 import subprocess
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .benchmark import BenchmarkRunner, BenchmarkResult, ConcurrencyBenchmarkRunner, select_best_result
+from .benchmark import BenchmarkResult
+from .autotune import AutoTuneRunner
 from .catalog import load_model_manifests
 from .commerce import Feature, Plan
 from .downloads import DownloadCancelled, DownloadProgress, ResumableDownloader, filename_from_url, human_bytes
@@ -245,21 +250,21 @@ class BenchmarksScreen(BaseScreen):
         controls.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         controls.columnconfigure(1, weight=1)
 
-        ttk.Label(controls, text="GPU layers", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        self.layers = tk.StringVar(value="12,16,20,24")
-        ttk.Entry(controls, textvariable=self.layers).grid(row=0, column=1, sticky="ew", padx=(12, 8))
-        self.quick_mode = tk.BooleanVar(value=True)
-        ttk.Checkbutton(controls, text="QUICK TUNE", variable=self.quick_mode).grid(row=0, column=2, padx=(0, 8))
-        ttk.Button(
-            controls,
-            text="RUN TUNE",
-            style="Gold.TButton",
-            command=self._start,
-        ).grid(row=0, column=3)
+        ttk.Label(controls, text="FULL AUTO-TUNE", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        self.layers = tk.StringVar(value="")
+        self.advanced = ttk.Frame(controls, style="Panel.TFrame")
+        ttk.Label(self.advanced, text="GPU layer candidates (blank = automatic):", style="Muted.TLabel").pack(side="left")
+        ttk.Entry(self.advanced, textvariable=self.layers).pack(side="left", padx=8)
+        self.quick_button = ttk.Button(controls, text="⚡ QUICK TUNE", style="Gold.TButton",
+                                       command=lambda: self._start(True))
+        self.quick_button.grid(row=0, column=2, padx=8)
+        self.deep_button = ttk.Button(controls, text="◎ DEEP BENCHMARK", style="Secondary.TButton",
+                                      command=lambda: self._start(False))
+        self.deep_button.grid(row=0, column=3)
 
         self.state_label = ttk.Label(
             controls,
-            text="Ready. Each value is tested in an isolated llama.cpp process.",
+            text="Full Auto-Tune · hardware → GPU → verification → AI workers → save",
             style="Muted.TLabel",
         )
         self.state_label.grid(row=1, column=0, columnspan=4, sticky="w", pady=(10, 0))
@@ -284,7 +289,7 @@ class BenchmarksScreen(BaseScreen):
             "status": "Status",
             "latency": "Latency",
             "tokens": "Tokens",
-            "tps": "Approx tok/s",
+            "tps": "End-to-end tok/s",
         }
         widths = {"layers": 110, "status": 110, "latency": 130, "tokens": 90, "tps": 130}
         for key in columns:
@@ -304,31 +309,21 @@ class BenchmarksScreen(BaseScreen):
         )
         self.recommendation.grid(row=0, column=0, sticky="w")
 
-        self.apply_button = ttk.Button(
-            footer,
-            text="APPLY BEST",
-            style="Secondary.TButton",
-            state="disabled",
-            command=self._apply_best,
-        )
-        self.apply_button.grid(row=0, column=1, sticky="e")
+        self.cancel_button = ttk.Button(footer, text="CANCEL", state="disabled", command=self._cancel)
+        self.cancel_button.grid(row=0, column=1, sticky="e")
+        self.details_button = ttk.Button(footer, text="SHOW DETAILS", command=self._toggle_details)
+        self.details_button.grid(row=0, column=2, padx=8)
+        self.details = tk.Text(results, height=6, wrap="word", state="disabled")
 
         concurrency = ttk.LabelFrame(body, text="AI WORKERS · CONCURRENCY", style="Card.TLabelframe", padding=10)
         concurrency.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         concurrency.columnconfigure(0, weight=1)
         self.worker_state = ttk.Label(
             concurrency,
-            text="Start the main runtime, then measure 1 / 2 / 4 parallel local AI requests.",
+            text="Workers 1 / 2 / 4 are optimized automatically after the GPU tests.",
             style="Body.TLabel",
         )
         self.worker_state.grid(row=0, column=0, sticky="w")
-        ttk.Button(
-            concurrency,
-            text="AUTO OPTIMIZE AI WORKERS",
-            style="Gold.TButton",
-            command=self._start_concurrency,
-        ).grid(row=0, column=1, sticky="e", padx=(12, 0))
-
         worker_columns = ("workers", "wall", "throughput", "avg_latency")
         self.worker_table = ttk.Treeview(concurrency, columns=worker_columns, show="headings", height=3)
         worker_headings = {
@@ -342,206 +337,172 @@ class BenchmarksScreen(BaseScreen):
             self.worker_table.column(key, width=130, anchor="center")
         self.worker_table.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
-        self.best_result: BenchmarkResult | None = None
-        self.recommended_workers = 1
         self.running = False
+        self.events = queue.Queue()
+        self.cancelled = threading.Event()
 
+    def _toggle_details(self):
+        if self.details.winfo_ismapped():
+            self.details.grid_remove()
+            self.advanced.grid_remove()
+            self.details_button.configure(text="SHOW DETAILS")
+        else:
+            self.details.grid(row=2, column=0, columnspan=2, sticky="ew", pady=8)
+            self.advanced.grid(row=4, column=0, columnspan=4, sticky="ew", pady=8)
+            self.details_button.configure(text="HIDE DETAILS")
 
-    def _start_concurrency(self) -> None:
+    def _cancel(self):
+        self.cancelled.set()
+        self.activity_detail.configure(text="Cancelling · waiting for the current request and server cleanup…")
+
+    def _start(self, quick=False):
         if self.running:
             return
-        if not self.app.runtime.server_running():
-            messagebox.showwarning(
-                "AgentFoundry",
-                "Start the main llama.cpp runtime first. Worker optimization measures the live local endpoint.",
-            )
-            return
-        self.running = True
-        self.activity_var.set(0)
-        self.activity_detail.configure(text="● RUNNING · Measuring AI worker concurrency (1 / 2 / 4)…")
-        for item in self.worker_table.get_children():
-            self.worker_table.delete(item)
-        self.worker_state.configure(text="Apollo is measuring 1 / 2 / 4 workers…")
-        profile = self.app.current_profile()
-        runner = ConcurrencyBenchmarkRunner(log=self.app.log_queue.put)
-
-        def worker() -> None:
-            try:
-                summary = runner.run(profile, quick=self.quick_mode.get())
-                self.after(0, lambda: self._finish_concurrency(summary))
-            except Exception as exc:
-                self.after(0, lambda exc=exc: self._fail_concurrency(exc))
-
-        import threading
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _finish_concurrency(self, summary) -> None:
-        self.running = False
-        self.recommended_workers = summary.recommended_concurrency
-        for result in summary.results:
-            self.worker_table.insert(
-                "",
-                "end",
-                values=(
-                    result.concurrency,
-                    f"{result.wall_seconds:.2f}s",
-                    f"{result.throughput_rps:.3f}",
-                    f"{result.average_latency_seconds:.2f}s",
-                ),
-            )
-        self.activity_var.set(100)
-        self.activity_detail.configure(text=f"✓ WORKER OPTIMIZATION COMPLETE · {summary.recommended_concurrency} worker(s) selected.")
-        self.app.apollo_workers = summary.recommended_concurrency
-        self.app.settings.apollo_workers = summary.recommended_concurrency
-        save_settings(self.app.settings)
-        self.worker_state.configure(
-            text=f"✓ Apollo verified: {summary.recommended_concurrency} parallel AI worker(s)."
-        )
-        forge = self.app.screens.get("self_setup")
-        if forge is not None and hasattr(forge, "refresh_apollo_result"):
-            forge.refresh_apollo_result()
-        self.app.log_queue.put(
-            f"[Apollo] Recommended AI concurrency: {summary.recommended_concurrency} worker(s)."
-        )
-
-    def _fail_concurrency(self, exc: Exception) -> None:
-        self.running = False
-        self.worker_state.configure(text=f"Worker optimization failed: {exc}")
-        self.app.log_queue.put(f"[Apollo] Concurrency benchmark failed: {exc}")
-
-    def _parse_layers(self) -> list[int]:
-        values: list[int] = []
-        for raw in self.layers.get().split(","):
-            raw = raw.strip()
-            if not raw:
-                continue
-            value = int(raw)
-            if value < 0 or value > 200:
-                raise ValueError("GPU layer values must be between 0 and 200.")
-            if value not in values:
-                values.append(value)
-        if not values:
-            raise ValueError("Enter at least one GPU layer value.")
-        return values
-
-    def _start(self) -> None:
-        if self.running:
-            return
-        if self.app.runtime.server_running():
-            messagebox.showwarning(
-                "AgentFoundry",
-                "Stop the main llama.cpp runtime before benchmarking so VRAM measurements are not distorted.",
-            )
-            return
-
         try:
-            values = self._parse_layers()
             profile = self.app.current_profile()
+            candidates = [int(raw.strip()) for raw in self.layers.get().split(",") if raw.strip()] or None
+            if candidates and any(not 0 <= value <= 200 for value in candidates):
+                raise ValueError("GPU layers must be between 0 and 200.")
         except Exception as exc:
-            messagebox.showerror("AgentFoundry", str(exc))
+            messagebox.showerror("Apollo", str(exc))
             return
-
-        self.running = True
-        self.best_result = None
-        self.apply_button.configure(state="disabled")
-        for item in self.table.get_children():
-            self.table.delete(item)
-        self._activity_step = 0
-        self._activity_total = max(1, len(values))
+        self.running = self.app.tuning_active = True
+        self.cancelled.clear()
+        self.started = time.monotonic()
+        self.source_profile = asdict(profile)
+        self.source_executable = self.app.settings.llama_server_path
+        self.state_label.configure(text="● RUNNING · " + ("Quick Tune" if quick else "Deep Benchmark"))
+        self.activity_detail.configure(text="Hardware preflight…")
         self.activity_var.set(0)
-        self.activity_detail.configure(text=f"RUNNING · {'Quick Tune' if self.quick_mode.get() else 'Deep Benchmark'} · preparing {len(values)} GPU configurations…")
-        self.state_label.configure(text="● RUNNING · Apollo is benchmarking…")
-        self.recommendation.configure(text="Testing stable configurations…")
+        self._activity_step = 0
+        self._activity_total = len(set(candidates)) if candidates else 4
+        self.quick_button.configure(state="disabled")
+        self.deep_button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
+        self.recommendation.configure(text="Checking hardware, model and available memory…")
+        self.details.configure(state="normal")
+        self.details.delete("1.0", "end")
+        self.details.configure(state="disabled")
+        for table in (self.table, self.worker_table):
+            for item in table.get_children():
+                table.delete(item)
+        previous = {"fingerprint": self.app.settings.apollo_fingerprint,
+                    "gpu_layers": self.app.settings.apollo_gpu_layers,
+                    "tokens_per_second": self.app.settings.apollo_tokens_per_second or 0}
 
-        def log(message: str) -> None:
+        def log(message):
             self.app.log_queue.put(message)
+            self.events.put(("log", message))
 
-        runner = BenchmarkRunner(log=log, llama_server_path=self.app.settings.llama_server_path)
-
-        def on_result(result: BenchmarkResult) -> None:
-            self.after(0, lambda result=result: self._append_result(result))
-
-        def worker() -> None:
+        def worker():
             try:
-                results = runner.run_many(profile, values, progress=on_result, quick=self.quick_mode.get())
-                best = select_best_result(results)
-                self.after(0, lambda: self._finish(best))
+                runner = AutoTuneRunner(self.source_executable, log, self.cancelled)
+                result = runner.run(profile, quick, candidates, previous,
+                                    progress=lambda item: self.events.put(("gpu", item)))
+                self.events.put(("done", result))
             except Exception as exc:
-                self.after(0, lambda exc=exc: self._fail(exc))
+                self.events.put(("error", str(exc)))
 
-        import threading
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=worker, daemon=False).start()
+        self.after(100, self._poll_tune)
 
-    def _append_result(self, result: BenchmarkResult) -> None:
-        self._activity_step += 1
-        self.activity_var.set(self._activity_step / self._activity_total * 100)
-        self.activity_detail.configure(
-            text=f"RUNNING · GPU {result.gpu_layers} layers complete · {self._activity_step}/{self._activity_total}"
-        )
-        self.table.insert(
-            "",
-            "end",
-            values=(
-                result.gpu_layers,
-                result.status,
-                f"{result.latency_seconds:.2f}s" if result.stable else "—",
-                result.completion_tokens if result.stable else "—",
-                f"{result.tokens_per_second:.2f}" if result.stable else "—",
-            ),
-        )
+    def _poll_tune(self):
+        try:
+            while True:
+                kind, value = self.events.get_nowait()
+                if kind == "log":
+                    self.details.configure(state="normal")
+                    self.details.insert("end", value + "\n")
+                    self.details.see("end")
+                    self.details.configure(state="disabled")
+                    if not value.startswith("[Apollo server diagnostics]"):
+                        self.activity_detail.configure(text=value)
+                    if value.startswith("Verify configuration"):
+                        self.activity_var.set(65)
+                    elif value.startswith("AI worker"):
+                        self.activity_var.set(80)
+                elif kind == "gpu":
+                    self._activity_step += 1
+                    self.activity_var.set(min(60, 60 * self._activity_step / self._activity_total))
+                    self.table.insert("", "end", values=(value.gpu_layers, value.status,
+                                      f"{value.latency_seconds:.2f}s", value.completion_tokens,
+                                      f"{value.tokens_per_second:.2f}"))
+                elif kind == "done":
+                    self._complete_tune(value)
+                elif kind == "error":
+                    self._tune_failed(value)
+        except queue.Empty:
+            pass
+        if self.running:
+            self.state_label.configure(text=f"● RUNNING · Elapsed {int(time.monotonic() - self.started)}s")
+            self.after(200, self._poll_tune)
 
-    def _finish(self, best: BenchmarkResult | None) -> None:
-        self.running = False
-        self.best_result = best
-        if best is None:
-            self.state_label.configure(text="Benchmark finished: no stable configuration found.")
-            self.recommendation.configure(text="No stable result. Keep the current profile and inspect the logs.")
-            self.apply_button.configure(state="disabled")
-            return
+    def _end_tune(self):
+        self.running = self.app.tuning_active = False
+        self.quick_button.configure(state="normal")
+        self.deep_button.configure(state="normal")
+        self.cancel_button.configure(state="disabled")
 
-        self.activity_var.set(100)
-        self.activity_detail.configure(text="✓ GPU benchmark complete · recommendation ready.")
-        self.state_label.configure(text="✓ COMPLETE · Benchmark finished.")
-        self.recommendation.configure(
-            text=(
-                f"Fastest stable result: {best.gpu_layers} GPU layers · "
-                f"{best.latency_seconds:.2f}s · {best.tokens_per_second:.2f} approximate tok/s"
-            )
-        )
-        self.apply_button.configure(state="normal")
+    def _tune_failed(self, message):
+        self._end_tune()
+        self.state_label.configure(text="RETEST REQUIRED · Auto-Tune did not complete")
+        self.recommendation.configure(text=message, wraplength=720)
+        self.activity_detail.configure(text="Current profile preserved. See details for diagnostics.")
+        self.app.settings.apollo_status = "RETEST REQUIRED"
+        self.app._apollo_saved_status = "RETEST REQUIRED"
+        self.app.settings.apollo_last_attempt = {"status": "RETEST REQUIRED", "reason": message}
+        try:
+            save_settings(self.app.settings)
+        except OSError as exc:
+            self.app.log_queue.put(f"[Apollo] Could not save failure status: {exc}")
+        self._refresh_forge()
 
-    def _fail(self, exc: Exception) -> None:
-        self.running = False
-        self.state_label.configure(text="Benchmark failed.")
-        self.recommendation.configure(text=str(exc))
-        self.apply_button.configure(state="disabled")
-        self.app.log_queue.put(f"[Apollo] Benchmark failed: {exc}")
+    def _complete_tune(self, result):
+        try:
+            if self.cancelled.is_set():
+                raise RuntimeError("Auto-Tune cancelled. Current profile preserved.")
+            if (asdict(self.app.current_profile()) != self.source_profile
+                    or self.app.settings.llama_server_path != self.source_executable):
+                raise RuntimeError("Runtime settings changed while tuning. Retest required.")
+            settings = self.app.settings
+            # One atomic settings write contains evidence, workers and the full selected profile.
+            from dataclasses import replace
+            updated = replace(settings, apollo_last_attempt=asdict(result), apollo_status=result.status)
+            if result.status == "VERIFIED":
+                updated.apollo_profile = result.profile
+                updated.apollo_fingerprint = result.fingerprint
+                updated.apollo_gpu_layers = result.profile["gpu_layers"]
+                updated.apollo_workers = result.workers["recommended_concurrency"]
+                updated.apollo_tokens_per_second = result.verification["tokens_per_second"]
+            save_settings(updated)
+            self.app.settings = updated
+            self.app._apollo_saved_status = result.status
+            if result.status == "VERIFIED":
+                self.app.gpu_layers.set(str(updated.apollo_gpu_layers))
+                self.app.apollo_gpu_layers = updated.apollo_gpu_layers
+                self.app.apollo_workers = updated.apollo_workers
+                self.app.apollo_tokens_per_second = updated.apollo_tokens_per_second
+                updated.apollo_status = "VERIFIED"
+            if result.workers:
+                for item in result.workers["results"]:
+                    self.worker_table.insert("", "end", values=(item["concurrency"],
+                        f'{item["wall_seconds"]:.2f}s', f'{item["throughput_rps"]:.3f}',
+                        f'{item["average_latency_seconds"]:.2f}s'))
+                self.worker_state.configure(text=f'Candidate: {result.workers["recommended_concurrency"]} AI worker(s) · {result.status}')
+            self._end_tune()
+            self.activity_var.set(100)
+            self.state_label.configure(text=f"{result.status} · Elapsed {int(time.monotonic() - self.started)}s")
+            self.recommendation.configure(text=result.reason, wraplength=720)
+            self.activity_detail.configure(text=("✓ OPTIMIZATION COMPLETE · Profile saved and applied."
+                if result.status == "VERIFIED" else "Measurement saved · Current profile preserved · Run Deep Benchmark again."))
+            self._refresh_forge()
+        except Exception as exc:
+            self._tune_failed(str(exc))
 
-    def _apply_best(self) -> None:
-        if self.best_result is None:
-            return
-        layers = self.best_result.gpu_layers
-        self.app.gpu_layers.set(str(layers))
-        self.app.apollo_gpu_layers = layers
-        self.app.apollo_tokens_per_second = self.best_result.tokens_per_second
-        self.app.settings.apollo_gpu_layers = layers
-        self.app.settings.apollo_tokens_per_second = self.best_result.tokens_per_second
-        save_settings(self.app.settings)
+    def _refresh_forge(self):
         forge = self.app.screens.get("self_setup")
-        if forge is not None and hasattr(forge, "refresh_apollo_result"):
+        if forge is not None:
             forge.refresh_apollo_result()
-        self.app.log_queue.put(
-            f"[Apollo] Applied benchmark recommendation: {layers} GPU layers."
-        )
-        self.recommendation.configure(
-            text=f"✓ Applied: {layers} GPU layers. Save/apply the profile before the next runtime start."
-        )
-        self.apply_button.configure(text="✓ APPLIED", state="disabled")
-        messagebox.showinfo(
-            "Apollo · Recommendation applied",
-            f"Applied {layers} GPU layers to the current AgentFoundry profile.\n\n"
-            "The new value will be used for the next runtime start.",
-        )
 
 
 class HardwareScreen(BaseScreen):
@@ -679,7 +640,7 @@ class SelfSetupScreen(BaseScreen):
         self.info = None
         self.plan = None
 
-        self.apollo_status = ttk.LabelFrame(body, text="APOLLO · VERIFIED RESULT", style="Card.TLabelframe", padding=14)
+        self.apollo_status = ttk.LabelFrame(body, text="APOLLO · OPTIMIZATION STATUS", style="Card.TLabelframe", padding=14)
         self.apollo_status.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(16, 0))
         self.apollo_result_text = ttk.Label(
             self.apollo_status,
@@ -701,9 +662,9 @@ class SelfSetupScreen(BaseScreen):
         if tps is not None:
             parts.append(f"{tps:.2f} tok/s")
         if parts:
-            self.apollo_result_text.configure(text="✓ APOLLO VERIFIED · " + " · ".join(parts))
+            self.apollo_result_text.configure(text=self.app.settings.apollo_status + " · Saved measurement: " + " · ".join(parts))
         else:
-            self.apollo_result_text.configure(text="Not benchmarked yet · Run Apollo to verify this machine.")
+            self.apollo_result_text.configure(text=self.app.settings.apollo_status + " · Run Apollo Auto-Tune to verify this machine.")
 
     def _analyze(self) -> None:
         self.info = detect_hardware()
@@ -746,7 +707,7 @@ class SelfSetupScreen(BaseScreen):
         self.app.log_queue.put("[Forge] Safe Self Setup applied to the current runtime profile.")
         messagebox.showinfo(
             "AgentFoundry",
-            "Safe runtime settings applied.\n\nRun Apollo Benchmarks next to measure GPU layers and concurrency before saving the final profile.",
+            "Safe runtime settings applied.\n\nRun Apollo Auto-Tune next. Deep Benchmark automatically saves and applies a verified GPU and worker profile.",
         )
 
 
