@@ -24,6 +24,7 @@ from .settings import APP_DIR, detect_runtime_paths, save_settings
 from .theme import COLORS
 from .trading.market_data import DexScreenerSolanaFeed
 from .trading.memory import TradeMemory
+from .trading.risk_enrichment import RugCheckClient
 
 
 class BaseScreen(ttk.Frame):
@@ -873,7 +874,7 @@ class SelfSetupScreen(BaseScreen):
         self.solana_prepare_button.pack(side="left")
         self.solana_scan_button = ttk.Button(
             pack_actions,
-            text="SCAN LIVE MARKET",
+            text="SCAN + RISK CHECK",
             style="Secondary.TButton",
             state="disabled",
             command=self._scan_solana_market,
@@ -894,6 +895,7 @@ class SelfSetupScreen(BaseScreen):
         )
         self.market_status.pack(anchor="w", pady=(12, 0))
         self.market_candidates = []
+        self.risk_assessments = []
         self.refresh_apollo_result()
 
     def refresh_apollo_result(self) -> None:
@@ -1002,42 +1004,73 @@ class SelfSetupScreen(BaseScreen):
         if not self.app.runtime.server_running():
             messagebox.showwarning("Solana Research", "Start or prepare the optimized runtime first.")
             return
-        self.solana_scan_button.configure(text="SCANNING…", state="disabled")
-        self.market_status.configure(text="Scanning recent Solana token profiles and market pairs…")
+        self.solana_scan_button.configure(text="SCANNING + RISK…", state="disabled")
+        self.market_status.configure(
+            text="Discovering live Solana candidates, then applying read-only RugCheck enrichment and hard risk gates…"
+        )
 
         def worker() -> None:
             try:
                 candidates = DexScreenerSolanaFeed().discover_latest(limit=12)
-                self.after(0, lambda: finish(candidates, None))
+                client = RugCheckClient(delay_seconds=0.35)
+                assessments = []
+                errors = []
+                for candidate in candidates[:5]:
+                    try:
+                        assessments.append(client.assess(candidate))
+                    except Exception as exc:
+                        errors.append((candidate.symbol, str(exc)))
+                self.after(0, lambda: finish(candidates, assessments, errors, None))
             except Exception as exc:
-                self.after(0, lambda: finish([], str(exc)))
+                self.after(0, lambda: finish([], [], [], str(exc)))
 
-        def finish(candidates, error) -> None:
-            self.solana_scan_button.configure(text="SCAN LIVE MARKET", state="normal")
-            if error:
-                self.market_status.configure(text=f"Market scan failed: {error}")
-                self.app.log_queue.put(f"[Pack] Solana market scan failed: {error}")
+        def finish(candidates, assessments, errors, fatal_error) -> None:
+            self.solana_scan_button.configure(text="SCAN + RISK CHECK", state="normal")
+            if fatal_error:
+                self.market_status.configure(text=f"Market scan failed: {fatal_error}")
+                self.app.log_queue.put(f"[Pack] Solana market scan failed: {fatal_error}")
                 return
+
             self.market_candidates = candidates
+            self.risk_assessments = assessments
             if not candidates:
                 self.market_status.configure(text="No current Solana candidates returned by the discovery feed.")
                 return
+
             lines = [
-                "LIVE DISCOVERY · market data only · risk enrichment still required before PAPER BUY/IGNORE",
+                "LIVE DISCOVERY + HARD RISK GATES · PAPER ONLY",
             ]
-            for candidate in candidates[:5]:
-                market_cap = (
-                    "$" + format(candidate.market_cap_usd, ",.0f")
-                    if candidate.market_cap_usd is not None else "n/a"
+            for assessment in assessments:
+                candidate = assessment.candidate
+                icon = "✓" if assessment.status == "PASS" else "✕"
+                reasons = ", ".join(assessment.decision.reasons) if assessment.decision.reasons else "hard gates passed"
+                top10 = (
+                    f"{assessment.evidence.top10_holder_pct:.1f}%"
+                    if assessment.evidence.top10_holder_pct is not None else "n/a"
+                )
+                developer = (
+                    f"{assessment.evidence.developer_holding_pct:.1f}%"
+                    if assessment.evidence.developer_holding_pct is not None else "n/a"
                 )
                 lines.append(
-                    f"{candidate.symbol:<10} · liq " + "$" + format(candidate.liquidity_usd, ",.0f") +
-                    f" · MC {market_cap} · 5m B/S {candidate.buys_5m}/{candidate.sells_5m}"
+                    f"{icon} {assessment.status:<5} {candidate.symbol:<10} · liq $"
+                    + format(candidate.liquidity_usd, ",.0f")
+                    + f" · top10 {top10} · dev {developer} · {reasons}"
                 )
+
+            for symbol, error in errors:
+                lines.append(f"! BLOCK {symbol:<10} · risk report unavailable · {error}")
+
+            passed = sum(item.status == "PASS" for item in assessments)
+            checked = len(assessments) + len(errors)
+            lines.append(
+                f"RESULT · {passed}/{checked} checked candidates passed every deterministic gate. "
+                "Only PASS candidates may reach Qwen analysis."
+            )
             self.market_status.configure(text="\n".join(lines))
             self.app.log_queue.put(
-                f"[Pack] Solana live discovery returned {len(candidates)} market candidate(s). "
-                "Risk enrichment required before deterministic gates."
+                f"[Pack] Risk gate complete · {passed}/{checked} candidates passed. "
+                "No live trade action was available or executed."
             )
 
         threading.Thread(target=worker, daemon=True).start()
