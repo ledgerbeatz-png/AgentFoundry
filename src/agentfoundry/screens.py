@@ -24,7 +24,7 @@ from .settings import APP_DIR, detect_runtime_paths, save_settings
 from .theme import COLORS
 from .trading.market_data import DexScreenerSolanaFeed
 from .trading.memory import TradeMemory
-from .trading.risk_enrichment import RugCheckClient
+from .trading.risk_enrichment import RugCheckClient, SolanaRpcRiskClient
 
 
 class BaseScreen(ttk.Frame):
@@ -1012,14 +1012,21 @@ class SelfSetupScreen(BaseScreen):
         def worker() -> None:
             try:
                 candidates = DexScreenerSolanaFeed().discover_latest(limit=12)
-                client = RugCheckClient(delay_seconds=0.35)
+                rpc = SolanaRpcRiskClient(
+                    rpc_url=self.app.settings.solana_rpc_url or None,
+                    timeout=15.0,
+                )
+                client = RugCheckClient(delay_seconds=0.35, rpc_client=rpc)
                 assessments = []
                 errors = []
                 for candidate in candidates[:5]:
                     try:
                         assessments.append(client.assess(candidate))
                     except Exception as exc:
-                        errors.append((candidate.symbol, str(exc)))
+                        message = str(exc)
+                        errors.append((candidate.symbol, message))
+                        if ("HTTP 429" in message or "Too Many Requests" in message) and not self.app.settings.solana_rpc_url:
+                            break
                 self.after(0, lambda: finish(candidates, assessments, errors, None))
             except Exception as exc:
                 self.after(0, lambda: finish([], [], [], str(exc)))
@@ -1066,8 +1073,18 @@ class SelfSetupScreen(BaseScreen):
                     line += " · " + rpc_note
                 lines.append(line)
 
-            for symbol, error in errors:
-                lines.append(f"! BLOCK {symbol:<10} · risk report unavailable · {error}")
+            public_rate_limited = (
+                not self.app.settings.solana_rpc_url
+                and any("429" in error or "Too Many Requests" in error for _symbol, error in errors)
+            )
+            if public_rate_limited:
+                lines.append(
+                    "! RPC PROVIDER REQUIRED · public Solana RPC is rate-limiting holder lookups. "
+                    "Open Settings and add a dedicated Solana RPC URL once; AgentFoundry will reuse it automatically."
+                )
+            else:
+                for symbol, error in errors:
+                    lines.append(f"! BLOCK {symbol:<10} · risk report unavailable · {error}")
 
             passed = sum(item.status == "PASS" for item in assessments)
             checked = len(assessments) + len(errors)
@@ -1468,6 +1485,7 @@ class SettingsScreen(BaseScreen):
         self.llama_path = tk.StringVar(value=app.settings.llama_server_path)
         self.hermes_path = tk.StringVar(value=app.settings.hermes_path)
         self.model_dir = tk.StringVar(value=app.settings.model_dir)
+        self.solana_rpc_url = tk.StringVar(value=app.settings.solana_rpc_url)
         self.host = tk.StringVar(value=app.settings.host)
         self.port = tk.StringVar(value=str(app.settings.port))
         self.status_text = tk.StringVar(value="")
@@ -1484,20 +1502,23 @@ class SettingsScreen(BaseScreen):
         ttk.Entry(card, textvariable=self.model_dir).grid(row=2, column=1, sticky="ew", padx=(12, 8), pady=6)
         ttk.Button(card, text="Browse", style="Secondary.TButton", command=self._browse_models).grid(row=2, column=2, pady=6)
 
-        ttk.Label(card, text="Host", style="Muted.TLabel").grid(row=3, column=0, sticky="w", pady=6)
-        ttk.Entry(card, textvariable=self.host).grid(row=3, column=1, sticky="ew", padx=(12, 8), pady=6)
+        ttk.Label(card, text="Solana RPC URL", style="Muted.TLabel").grid(row=3, column=0, sticky="w", pady=6)
+        ttk.Entry(card, textvariable=self.solana_rpc_url).grid(row=3, column=1, columnspan=2, sticky="ew", padx=(12, 0), pady=6)
 
-        ttk.Label(card, text="Port", style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=6)
-        ttk.Entry(card, textvariable=self.port).grid(row=4, column=1, sticky="ew", padx=(12, 8), pady=6)
+        ttk.Label(card, text="Host", style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=6)
+        ttk.Entry(card, textvariable=self.host).grid(row=4, column=1, sticky="ew", padx=(12, 8), pady=6)
+
+        ttk.Label(card, text="Port", style="Muted.TLabel").grid(row=5, column=0, sticky="w", pady=6)
+        ttk.Entry(card, textvariable=self.port).grid(row=5, column=1, sticky="ew", padx=(12, 8), pady=6)
 
         actions = ttk.Frame(card, style="Panel.TFrame")
-        actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(16, 0))
+        actions.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(16, 0))
         ttk.Button(actions, text="AUTO DETECT", style="Secondary.TButton", command=self._detect).pack(side="left")
         ttk.Button(actions, text="SAVE SETTINGS", style="Gold.TButton", command=self._save).pack(side="left", padx=8)
         ttk.Button(actions, text="RUN SETUP WIZARD", style="Secondary.TButton", command=app.open_setup_wizard).pack(side="right")
 
         ttk.Label(card, textvariable=self.status_text, style="Muted.TLabel", wraplength=760).grid(
-            row=6, column=0, columnspan=3, sticky="w", pady=(12, 0)
+            row=7, column=0, columnspan=3, sticky="w", pady=(12, 0)
         )
 
     def _browse_llama(self) -> None:
@@ -1554,6 +1575,7 @@ class SettingsScreen(BaseScreen):
         self.app.settings.llama_server_path = self.llama_path.get().strip()
         self.app.settings.hermes_path = self.hermes_path.get().strip()
         self.app.settings.model_dir = self.model_dir.get().strip()
+        self.app.settings.solana_rpc_url = self.solana_rpc_url.get().strip()
         self.app.settings.host = host
         self.app.settings.port = port
         self.app.save_app_settings()
@@ -1563,6 +1585,7 @@ class SettingsScreen(BaseScreen):
         self.llama_path.set(self.app.settings.llama_server_path)
         self.hermes_path.set(self.app.settings.hermes_path)
         self.model_dir.set(self.app.settings.model_dir)
+        self.solana_rpc_url.set(self.app.settings.solana_rpc_url)
         self.host.set(self.app.settings.host)
         self.port.set(str(self.app.settings.port))
 
