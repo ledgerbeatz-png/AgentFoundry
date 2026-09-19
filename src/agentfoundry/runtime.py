@@ -61,8 +61,8 @@ class RuntimeController:
                 return found
         return None
 
-    def build_llama_args(self, profile: RuntimeProfile) -> list[str]:
-        return [
+    def build_llama_args(self, profile: RuntimeProfile, parallel: int | None = None) -> list[str]:
+        args = [
             "-m", profile.model_path,
             "-c", str(profile.context),
             "-ngl", str(profile.gpu_layers),
@@ -77,13 +77,16 @@ class RuntimeController:
             "--host", profile.host,
             "--port", str(profile.port),
         ]
+        if parallel is not None:
+            args.extend(["--parallel", str(max(1, int(parallel)))])
+        return args
 
     def _pump_output(self, process: subprocess.Popen[str], prefix: str) -> None:
         assert process.stdout is not None
         for line in process.stdout:
             self.log(f"[{prefix}] {line.rstrip()}")
 
-    def start_server(self, profile: RuntimeProfile) -> None:
+    def start_server(self, profile: RuntimeProfile, parallel: int | None = None) -> None:
         if self.server_process and self.server_process.poll() is None:
             self.log("[AgentFoundry] llama.cpp server is already running.")
             return
@@ -96,8 +99,11 @@ class RuntimeController:
         if not executable:
             raise FileNotFoundError("llama-server was not found in PATH.")
 
-        command = [executable, *self.build_llama_args(profile)]
-        self.log("[AgentFoundry] Starting llama.cpp server...")
+        command = [executable, *self.build_llama_args(profile, parallel=parallel)]
+        self.log(
+            "[AgentFoundry] Starting llama.cpp server"
+            + (f" · {parallel} parallel worker slot(s)..." if parallel is not None else "...")
+        )
         self.log("[AgentFoundry] " + subprocess.list2cmdline(command))
 
         creationflags = 0
