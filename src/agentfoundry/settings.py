@@ -16,6 +16,7 @@ class AppSettings:
     llama_server_path: str = ""
     hermes_path: str = ""
     model_dir: str = ""
+    solana_rpc_url: str = ""
     host: str = "127.0.0.1"
     port: int = 8080
     first_run_complete: bool = False
