@@ -20,8 +20,9 @@ from .hardware import detect_hardware, recommend_runtime
 from .packs import builtin_registry
 from .self_setup import build_self_setup_plan
 from .runtime import RuntimeProfile
-from .settings import detect_runtime_paths, save_settings
+from .settings import APP_DIR, detect_runtime_paths, save_settings
 from .theme import COLORS
+from .trading.memory import TradeMemory
 
 
 class BaseScreen(ttk.Frame):
@@ -843,6 +844,37 @@ class SelfSetupScreen(BaseScreen):
             style="Secondary.TButton",
             command=lambda: app.show_screen("benchmarks"),
         ).pack(side="right")
+
+        self.solana_card = ttk.LabelFrame(
+            body,
+            text="4 · SOLANA RESEARCH PACK · PAPER ONLY",
+            style="Card.TLabelframe",
+            padding=14,
+        )
+        self.solana_card.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        self.solana_pack_status = ttk.Label(
+            self.solana_card,
+            text="Waiting for an Apollo-ready local runtime.",
+            style="Body.TLabel",
+            justify="left",
+            wraplength=900,
+        )
+        self.solana_pack_status.pack(anchor="w")
+        pack_actions = ttk.Frame(self.solana_card, style="Panel.TFrame")
+        pack_actions.pack(fill="x", pady=(12, 0))
+        self.solana_prepare_button = ttk.Button(
+            pack_actions,
+            text="PREPARE SOLANA RESEARCH",
+            style="Gold.TButton",
+            state="disabled",
+            command=self._prepare_solna_research,
+        )
+        self.solana_prepare_button.pack(side="left")
+        ttk.Label(
+            pack_actions,
+            text="No wallet signing · no live orders · deterministic risk gates",
+            style="Muted.TLabel",
+        ).pack(side="right")
         self.refresh_apollo_result()
 
     def refresh_apollo_result(self) -> None:
@@ -865,11 +897,19 @@ class SelfSetupScreen(BaseScreen):
                 text=prefix + " · " + " · ".join(parts) + "\n" + suffix + " Ready for local PAPER research packs."
             )
             self.start_optimized_button.configure(state="normal")
+            self.solana_prepare_button.configure(state="normal")
+            self.solana_pack_status.configure(
+                text="READY TO PREPARE · Apollo profile available · local model selected · PAPER ONLY."
+            )
         else:
             self.apollo_result_text.configure(
                 text=status + " · Run Apollo Auto-Tune before starting an optimized runtime."
             )
             self.start_optimized_button.configure(state="disabled")
+            self.solana_prepare_button.configure(state="disabled")
+            self.solana_pack_status.configure(
+                text="Waiting for QUICK READY or VERIFIED Apollo profile before preparing Solana Research."
+            )
 
     def _start_optimized_runtime(self) -> None:
         if self.app.settings.apollo_status not in {"VERIFIED", "QUICK READY"}:
@@ -885,6 +925,55 @@ class SelfSetupScreen(BaseScreen):
             text="RUNTIME RUNNING" if self.app.runtime.server_running() else "START OPTIMIZED RUNTIME",
             state="disabled" if self.app.runtime.server_running() else "normal",
         ))
+
+    def _prepare_solna_research(self) -> None:
+        try:
+            pack = builtin_registry().get("trading.solana-research")
+        except KeyError:
+            messagebox.showerror("Forge", "Solana Research pack is not registered.")
+            return
+        if not pack.paper_only:
+            messagebox.showerror("Forge", "Safety boundary mismatch: Solana Research must remain PAPER ONLY.")
+            return
+        if self.app.settings.apollo_status not in {"VERIFIED", "QUICK READY"}:
+            messagebox.showwarning("Forge", "Run Apollo Quick Tune or Deep Verification first.")
+            return
+        model = Path(self.app.model_path.get()).expanduser()
+        if not model.is_file():
+            messagebox.showwarning("Forge", "Select a valid local GGUF model first.")
+            return
+
+        database = APP_DIR / "paper" / "solana-research.sqlite3"
+        memory = TradeMemory(database)
+        memory.close()
+        self.app.log_queue.put(f"[Pack] Solana Research paper memory ready: {database}")
+        self.app.log_queue.put("[Pack] Solana Research safety: PAPER ONLY · wallet signing disabled · live orders disabled.")
+
+        self.solana_prepare_button.configure(text="PREPARING…", state="disabled")
+        self.solana_pack_status.configure(
+            text="Preparing local paper-research workspace and optimized runtime…"
+        )
+        if not self.app.runtime.server_running():
+            self._start_optimized_runtime()
+
+        def finish() -> None:
+            if self.app.runtime.server_running():
+                self.solana_pack_status.configure(
+                    text=(
+                        "✓ PAPER WORKSPACE READY · optimized local runtime online · "
+                        "deterministic risk gates active · SQLite trade memory initialized. "
+                        "Next: connect live Solana market discovery/data feeds."
+                    )
+                )
+                self.solana_prepare_button.configure(text="PAPER WORKSPACE READY", state="disabled")
+                self.app.log_queue.put("[Pack] Solana Research workspace READY · market feed connection is the next step.")
+            else:
+                self.solana_pack_status.configure(
+                    text="Runtime did not stay online. Check Logs before preparing the pack again."
+                )
+                self.solana_prepare_button.configure(text="PREPARE SOLANA RESEARCH", state="normal")
+
+        self.after(1800, finish)
 
     def _analyze(self) -> None:
         self.info = detect_hardware()
