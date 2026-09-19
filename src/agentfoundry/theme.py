@@ -58,6 +58,12 @@ def apply_theme(root: tk.Tk) -> ttk.Style:
     style.configure("Status.TLabel", background=COLORS["obsidian"], foreground=COLORS["green"], font=("Segoe UI", 10, "bold"))
     style.configure("Metric.TLabel", background=COLORS["panel_alt"], foreground=COLORS["marble"], font=("Segoe UI", 13, "bold"))
     style.configure("MetricCaption.TLabel", background=COLORS["panel_alt"], foreground=COLORS["muted"], font=("Segoe UI", 8))
+    style.configure("MetricGold.TLabel", background=COLORS["panel_alt"], foreground=COLORS["pale_gold"], font=("Segoe UI", 20, "bold"))
+    style.configure("Success.TLabel", background=COLORS["panel"], foreground=COLORS["green"], font=("Segoe UI", 10, "bold"))
+    style.configure("GoldStatus.TLabel", background=COLORS["panel"], foreground=COLORS["pale_gold"], font=("Segoe UI", 10, "bold"))
+    style.configure("Badge.TLabel", background=COLORS["panel_alt"], foreground=COLORS["green"], font=("Segoe UI", 8, "bold"), padding=(7, 3))
+    style.configure("PaperBadge.TLabel", background=COLORS["panel_alt"], foreground=COLORS["amber"], font=("Segoe UI", 8, "bold"), padding=(7, 3))
+    style.configure("Horizontal.TProgressbar", troughcolor=COLORS["midnight"], background=COLORS["gold"], bordercolor=COLORS["border"], lightcolor=COLORS["gold"], darkcolor=COLORS["gold"])
 
     style.configure("TEntry", fieldbackground=COLORS["midnight"], foreground=COLORS["marble"], insertcolor=COLORS["marble"], bordercolor=COLORS["border"], padding=7)
     style.map("TEntry", bordercolor=[("focus", COLORS["gold"])])
@@ -82,5 +88,9 @@ def apply_theme(root: tk.Tk) -> ttk.Style:
 
     style.configure("Card.TLabelframe", background=COLORS["panel"], bordercolor=COLORS["border"], relief="solid")
     style.configure("Card.TLabelframe.Label", background=COLORS["panel"], foreground=COLORS["pale_gold"], font=("Segoe UI", 10, "bold"))
+    style.configure("Treeview", background=COLORS["midnight"], fieldbackground=COLORS["midnight"], foreground=COLORS["marble"], rowheight=30, bordercolor=COLORS["border"])
+    style.configure("Treeview.Heading", background=COLORS["panel_alt"], foreground=COLORS["pale_gold"], font=("Segoe UI", 9, "bold"), padding=(8, 7))
+    style.map("Treeview", background=[("selected", COLORS["panel_alt"])], foreground=[("selected", COLORS["pale_gold"])])
+    style.map("Treeview.Heading", background=[("active", COLORS["border"])])
 
     return style
