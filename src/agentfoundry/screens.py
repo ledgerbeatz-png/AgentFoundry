@@ -256,10 +256,10 @@ class BenchmarksScreen(BaseScreen):
         ttk.Label(self.advanced, text="GPU layer candidates (blank = automatic):", style="Muted.TLabel").pack(side="left")
         ttk.Entry(self.advanced, textvariable=self.layers).pack(side="left", padx=8)
         self.quick_button = ttk.Button(controls, text="⚡ QUICK TUNE", style="Gold.TButton",
-                                       command=lambda: self._start(True))
+                                       command=lambda: self._start("quick"))
         self.quick_button.grid(row=0, column=2, padx=8)
         self.deep_button = ttk.Button(controls, text="◎ DEEP BENCHMARK", style="Secondary.TButton",
-                                      command=lambda: self._start(False))
+                                      command=lambda: self._start("deep"))
         self.deep_button.grid(row=0, column=3)
 
         self.state_label = ttk.Label(
@@ -355,9 +355,13 @@ class BenchmarksScreen(BaseScreen):
         self.cancelled.set()
         self.activity_detail.configure(text="Cancelling · waiting for the current request and server cleanup…")
 
-    def _start(self, quick=False):
+    def _start(self, mode="quick"):
         if self.running:
             return
+        if mode not in {"quick", "deep"}:
+            messagebox.showerror("Apollo", f"Unknown tune mode: {mode}")
+            return
+        quick = mode == "quick"
         try:
             profile = self.app.current_profile()
             candidates = [int(raw.strip()) for raw in self.layers.get().split(",") if raw.strip()] or None
@@ -371,8 +375,8 @@ class BenchmarksScreen(BaseScreen):
         self.started = time.monotonic()
         self.source_profile = asdict(profile)
         self.source_executable = self.app.settings.llama_server_path
-        self.state_label.configure(text="● RUNNING · " + ("Quick Tune" if quick else "Deep Benchmark"))
-        self.activity_detail.configure(text="Hardware preflight…")
+        self.state_label.configure(text="● RUNNING · " + ("QUICK TUNE" if quick else "DEEP BENCHMARK"))
+        self.activity_detail.configure(text=("QUICK MODE" if quick else "DEEP MODE") + " · Hardware preflight…")
         self.activity_var.set(0)
         self._activity_step = 0
         self._activity_total = len(set(candidates)) if candidates else 4
@@ -382,6 +386,7 @@ class BenchmarksScreen(BaseScreen):
         self.recommendation.configure(text="Checking hardware, model and available memory…")
         self.details.configure(state="normal")
         self.details.delete("1.0", "end")
+        self.details.insert("end", f"APOLLO MODE = {mode.upper()}\n")
         self.details.configure(state="disabled")
         for table in (self.table, self.worker_table):
             for item in table.get_children():
@@ -397,8 +402,13 @@ class BenchmarksScreen(BaseScreen):
         def worker():
             try:
                 runner = AutoTuneRunner(self.source_executable, log, self.cancelled)
-                result = runner.run(profile, quick, candidates, previous,
-                                    progress=lambda item: self.events.put(("gpu", item)))
+                result = runner.run(
+                    profile,
+                    quick=quick,
+                    candidates=candidates,
+                    previous=previous,
+                    progress=lambda item: self.events.put(("gpu", item)),
+                )
                 self.events.put(("done", result))
             except Exception as exc:
                 self.events.put(("error", str(exc)))
@@ -468,7 +478,7 @@ class BenchmarksScreen(BaseScreen):
             # One atomic settings write contains evidence, workers and the full selected profile.
             from dataclasses import replace
             updated = replace(settings, apollo_last_attempt=asdict(result), apollo_status=result.status)
-            if result.status == "VERIFIED":
+            if result.status in {"VERIFIED", "QUICK READY"}:
                 updated.apollo_profile = result.profile
                 updated.apollo_fingerprint = result.fingerprint
                 updated.apollo_gpu_layers = result.profile["gpu_layers"]
@@ -477,12 +487,12 @@ class BenchmarksScreen(BaseScreen):
             save_settings(updated)
             self.app.settings = updated
             self.app._apollo_saved_status = result.status
-            if result.status == "VERIFIED":
+            if result.status in {"VERIFIED", "QUICK READY"}:
                 self.app.gpu_layers.set(str(updated.apollo_gpu_layers))
                 self.app.apollo_gpu_layers = updated.apollo_gpu_layers
                 self.app.apollo_workers = updated.apollo_workers
                 self.app.apollo_tokens_per_second = updated.apollo_tokens_per_second
-                updated.apollo_status = "VERIFIED"
+                updated.apollo_status = result.status
             if result.workers:
                 for item in result.workers["results"]:
                     self.worker_table.insert("", "end", values=(item["concurrency"],
@@ -493,8 +503,13 @@ class BenchmarksScreen(BaseScreen):
             self.activity_var.set(100)
             self.state_label.configure(text=f"{result.status} · Elapsed {int(time.monotonic() - self.started)}s")
             self.recommendation.configure(text=result.reason, wraplength=720)
-            self.activity_detail.configure(text=("✓ OPTIMIZATION COMPLETE · Profile saved and applied."
-                if result.status == "VERIFIED" else "Measurement saved · Current profile preserved · Run Deep Benchmark again."))
+            self.activity_detail.configure(text=(
+                "✓ VERIFIED · Profile saved and applied."
+                if result.status == "VERIFIED"
+                else "⚡ QUICK READY · Provisional profile saved and applied · Deep Benchmark optional."
+                if result.status == "QUICK READY"
+                else "Measurement saved · Current profile preserved · Retest recommended."
+            ))
             self._refresh_forge()
         except Exception as exc:
             self._tune_failed(str(exc))
