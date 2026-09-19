@@ -6,6 +6,7 @@ import os
 import time
 from typing import Any
 from urllib.parse import quote
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from .market_data import MarketCandidate
@@ -39,7 +40,13 @@ class CandidateRiskAssessment:
 class SolanaRpcRiskClient:
     """Read-only Solana RPC fallback for incomplete third-party risk reports."""
 
-    def __init__(self, rpc_url: str | None = None, timeout: float = 12.0, opener=None) -> None:
+    def __init__(
+        self,
+        rpc_url: str | None = None,
+        timeout: float = 12.0,
+        opener=None,
+        min_interval: float = 0.9,
+    ) -> None:
         configured = rpc_url or os.environ.get("SOLANA_RPC_URL")
         defaults = [
             "https://api.mainnet.solana.com",
@@ -54,38 +61,60 @@ class SolanaRpcRiskClient:
         self._opener = opener or urlopen
         self._request_id = 0
         self.last_rpc_url = ""
+        self.min_interval = max(0.0, min_interval)
+        self._last_request_at = 0.0
+
+    def _pace(self) -> None:
+        remaining = self.min_interval - (time.monotonic() - self._last_request_at)
+        if remaining > 0:
+            time.sleep(remaining)
 
     def _rpc(self, method: str, params: list[Any]) -> Any:
         errors: list[str] = []
         for rpc_url in self.rpc_urls:
-            self._request_id += 1
-            payload = json.dumps({
-                "jsonrpc": "2.0",
-                "id": self._request_id,
-                "method": method,
-                "params": params,
-            }).encode("utf-8")
-            request = Request(
-                rpc_url,
-                data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "User-Agent": "AgentFoundry/0.1 SolanaResearchPaper",
-                },
-                method="POST",
-            )
-            try:
-                with self._opener(request, timeout=self.timeout) as response:
-                    body = json.loads(response.read().decode("utf-8"))
-                if not isinstance(body, dict) or body.get("error"):
-                    raise RuntimeError(
-                        str(body.get("error") if isinstance(body, dict) else "invalid response")
-                    )
-                self.last_rpc_url = rpc_url
-                return body.get("result")
-            except Exception as exc:
-                errors.append(f"{rpc_url}: {type(exc).__name__}: {exc}")
+            for attempt in range(2):
+                self._pace()
+                self._request_id += 1
+                payload = json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": self._request_id,
+                    "method": method,
+                    "params": params,
+                }).encode("utf-8")
+                request = Request(
+                    rpc_url,
+                    data=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                        "User-Agent": "AgentFoundry/0.1 SolanaResearchPaper",
+                    },
+                    method="POST",
+                )
+                try:
+                    self._last_request_at = time.monotonic()
+                    with self._opener(request, timeout=self.timeout) as response:
+                        body = json.loads(response.read().decode("utf-8"))
+                    if not isinstance(body, dict) or body.get("error"):
+                        raise RuntimeError(
+                            str(body.get("error") if isinstance(body, dict) else "invalid response")
+                        )
+                    self.last_rpc_url = rpc_url
+                    return body.get("result")
+                except HTTPError as exc:
+                    errors.append(f"{rpc_url}: HTTP {exc.code}")
+                    if exc.code in {429, 503} and attempt == 0:
+                        retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                        try:
+                            wait = float(retry_after) if retry_after else 2.0
+                        except (TypeError, ValueError):
+                            wait = 2.0
+                        time.sleep(max(1.0, min(wait, 5.0)))
+                        continue
+                    break
+                except Exception as exc:
+                    errors.append(f"{rpc_url}: {type(exc).__name__}: {exc}")
+                    break
         raise RuntimeError(f"Solana RPC {method} failed on all endpoints: {' | '.join(errors)}")
 
     @staticmethod
@@ -95,10 +124,18 @@ class SolanaRpcRiskClient:
         except (TypeError, ValueError):
             return 0
 
-    def enrich(self, mint: str, creator: str = "") -> dict[str, Any]:
-        supply_result = self._rpc("getTokenSupply", [mint, {"commitment": "confirmed"}]) or {}
-        supply_value = supply_result.get("value") if isinstance(supply_result, dict) else {}
-        supply = self._raw_amount((supply_value or {}).get("amount"))
+    def enrich(
+        self,
+        mint: str,
+        creator: str = "",
+        supply: int | None = None,
+        need_authorities: bool = False,
+    ) -> dict[str, Any]:
+        supply = self._raw_amount(supply)
+        if supply <= 0:
+            supply_result = self._rpc("getTokenSupply", [mint, {"commitment": "confirmed"}]) or {}
+            supply_value = supply_result.get("value") if isinstance(supply_result, dict) else {}
+            supply = self._raw_amount((supply_value or {}).get("amount"))
         if supply <= 0:
             raise RuntimeError("Solana RPC returned an invalid token supply.")
 
@@ -112,21 +149,23 @@ class SolanaRpcRiskClient:
         )
         top10_pct = (top10_amount / supply) * 100.0 if largest else None
 
-        account_result = self._rpc(
-            "getAccountInfo",
-            [mint, {"encoding": "jsonParsed", "commitment": "confirmed"}],
-        ) or {}
-        account = account_result.get("value") if isinstance(account_result, dict) else None
-        info = {}
-        if isinstance(account, dict):
-            data = account.get("data")
-            parsed = data.get("parsed") if isinstance(data, dict) else None
-            info = parsed.get("info") if isinstance(parsed, dict) and isinstance(parsed.get("info"), dict) else {}
-
-        mint_known = "mintAuthority" in info
-        freeze_known = "freezeAuthority" in info
-        mint_enabled = info.get("mintAuthority") is not None if mint_known else None
-        freeze_enabled = info.get("freezeAuthority") is not None if freeze_known else None
+        mint_enabled = None
+        freeze_enabled = None
+        if need_authorities:
+            account_result = self._rpc(
+                "getAccountInfo",
+                [mint, {"encoding": "jsonParsed", "commitment": "confirmed"}],
+            ) or {}
+            account = account_result.get("value") if isinstance(account_result, dict) else None
+            info = {}
+            if isinstance(account, dict):
+                data = account.get("data")
+                parsed = data.get("parsed") if isinstance(data, dict) else None
+                info = parsed.get("info") if isinstance(parsed, dict) and isinstance(parsed.get("info"), dict) else {}
+            if "mintAuthority" in info:
+                mint_enabled = info.get("mintAuthority") is not None
+            if "freezeAuthority" in info:
+                freeze_enabled = info.get("freezeAuthority") is not None
 
         developer_pct = None
         if creator:
@@ -316,7 +355,17 @@ class RugCheckClient:
         )):
             creator = str(report.get("creator") or "").strip()
             try:
-                fallback = self.rpc_client.enrich(candidate.token_address, creator=creator)
+                token = report.get("token") if isinstance(report.get("token"), dict) else {}
+                report_supply = self.rpc_client._raw_amount(token.get("supply"))
+                fallback = self.rpc_client.enrich(
+                    candidate.token_address,
+                    creator=creator,
+                    supply=report_supply or None,
+                    need_authorities=(
+                        evidence.mint_authority_enabled is None
+                        or evidence.freeze_authority_enabled is None
+                    ),
+                )
             except Exception as exc:
                 fallback = {}
                 rpc_warning = f"solana_rpc_fallback_failed:{type(exc).__name__}:{str(exc)[:160]}"
