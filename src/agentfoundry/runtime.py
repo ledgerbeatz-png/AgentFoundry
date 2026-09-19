@@ -194,6 +194,22 @@ class RuntimeController:
                 time.sleep(1)
         return False
 
+    def endpoint_ready(self, profile: RuntimeProfile, timeout: float = 2.0) -> bool:
+        """Return True when an OpenAI-compatible llama endpoint is actually reachable.
+
+        This is intentionally independent of server_process so AgentFoundry can
+        recognize a healthy runtime after UI restarts or when the process handle
+        is no longer owned by the current controller instance.
+        """
+        try:
+            with urllib.request.urlopen(f"{profile.base_url}/models", timeout=timeout) as response:
+                if response.status != 200:
+                    return False
+                payload = json.loads(response.read().decode("utf-8"))
+            return bool(payload.get("data"))
+        except Exception:
+            return False
+
     def get_models(self, profile: RuntimeProfile) -> list[str]:
         try:
             with urllib.request.urlopen(f"{profile.base_url}/models", timeout=3) as response:
