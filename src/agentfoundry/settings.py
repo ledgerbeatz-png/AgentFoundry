@@ -22,6 +22,9 @@ class AppSettings:
     plan: str = "free"
     trial_started_at: str = ""
     license_token: str = ""
+    apollo_gpu_layers: int | None = None
+    apollo_workers: int | None = None
+    apollo_tokens_per_second: float | None = None
 
     def normalize(self) -> "AppSettings":
         if not self.model_dir:
