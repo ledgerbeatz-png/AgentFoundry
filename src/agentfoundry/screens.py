@@ -940,16 +940,60 @@ class SelfSetupScreen(BaseScreen):
         if self.app.settings.apollo_status not in {"VERIFIED", "QUICK READY"}:
             messagebox.showwarning("Forge", "Apollo must produce QUICK READY or VERIFIED before optimized launch.")
             return
+        if self.app.runtime.server_running():
+            self.start_optimized_button.configure(text="RUNTIME RUNNING", state="disabled")
+            return
+
+        profile = self.app.current_profile()
+        parallel = self.app.apollo_workers or 1
         self.app.log_queue.put(
-            f"[Forge] Starting optimized runtime · {self.app.apollo_gpu_layers} GPU layers · "
-            f"{self.app.apollo_workers or 1} AI worker(s)."
+            f"[Forge] Starting optimized runtime · target {profile.gpu_layers} GPU layers · "
+            f"{parallel} AI worker(s)."
         )
         self.start_optimized_button.configure(text="STARTING…", state="disabled")
-        self.app.start_server()
-        self.after(1200, lambda: self.start_optimized_button.configure(
-            text="RUNTIME RUNNING" if self.app.runtime.server_running() else "START OPTIMIZED RUNTIME",
-            state="disabled" if self.app.runtime.server_running() else "normal",
-        ))
+        self.apollo_result_text.configure(
+            text="Starting optimized runtime · Apollo target "
+            f"{profile.gpu_layers} GPU layers · automatic VRAM recovery enabled."
+        )
+
+        def worker() -> None:
+            try:
+                started = self.app.runtime.start_server_with_gpu_fallback(
+                    profile,
+                    parallel=parallel,
+                    step=4,
+                    max_fallbacks=3,
+                    ready_timeout=45,
+                )
+                self.after(0, lambda: finish(started, None))
+            except Exception as exc:
+                self.after(0, lambda: finish(None, str(exc)))
+
+        def finish(started, error) -> None:
+            if error:
+                self.start_optimized_button.configure(text="START OPTIMIZED RUNTIME", state="normal")
+                self.apollo_result_text.configure(
+                    text=f"Runtime start failed · {error}"
+                )
+                messagebox.showerror("Forge", error)
+                return
+
+            actual_layers = started.gpu_layers
+            target_layers = profile.gpu_layers
+            if actual_layers == target_layers:
+                text = f"RUNTIME RUNNING · {actual_layers} GPU LAYERS"
+                note = "Optimized runtime online at the Apollo target."
+            else:
+                text = f"RUNTIME RUNNING · {actual_layers} GPU LAYERS"
+                note = (
+                    f"Runtime adapted to current VRAM pressure: {actual_layers} GPU layers "
+                    f"instead of Apollo target {target_layers}. Retune later only if you want a new target."
+                )
+            self.start_optimized_button.configure(text=text, state="disabled")
+            self.apollo_result_text.configure(text=note)
+            self.app.endpoint.set(started.base_url)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _prepare_solana_research(self) -> None:
         try:
@@ -975,31 +1019,66 @@ class SelfSetupScreen(BaseScreen):
         self.app.log_queue.put("[Pack] Solana Research safety: PAPER ONLY · wallet signing disabled · live orders disabled.")
 
         self.solana_prepare_button.configure(text="PREPARING…", state="disabled")
+        self.solana_scan_button.configure(state="disabled")
         self.solana_pack_status.configure(
             text="Preparing local paper-research workspace and optimized runtime…"
         )
-        if not self.app.runtime.server_running():
-            self._start_optimized_runtime()
 
-        def finish() -> None:
-            if self.app.runtime.server_running():
+        def finish(started_profile=None, error=None) -> None:
+            if error:
                 self.solana_pack_status.configure(
-                    text=(
-                        "✓ PAPER WORKSPACE READY · optimized local runtime online · "
-                        "deterministic risk gates active · SQLite trade memory initialized · "
-                        "live market discovery available."
-                    )
+                    text=f"Runtime start failed · {error}"
                 )
-                self.solana_prepare_button.configure(text="PAPER WORKSPACE READY", state="disabled")
-                self.solana_scan_button.configure(state="normal")
-                self.app.log_queue.put("[Pack] Solana Research workspace READY · live market discovery enabled.")
-            else:
+                self.solana_prepare_button.configure(text="PREPARE SOLANA RESEARCH", state="normal")
+                return
+            if not self.app.runtime.server_running():
                 self.solana_pack_status.configure(
                     text="Runtime did not stay online. Check Logs before preparing the pack again."
                 )
                 self.solana_prepare_button.configure(text="PREPARE SOLANA RESEARCH", state="normal")
+                return
 
-        self.after(1800, finish)
+            actual_layers = started_profile.gpu_layers if started_profile is not None else self.app.current_profile().gpu_layers
+            target_layers = self.app.current_profile().gpu_layers
+            layer_note = (
+                f"runtime {actual_layers} GPU layers"
+                if actual_layers == target_layers
+                else f"runtime adapted to {actual_layers} GPU layers (Apollo target {target_layers})"
+            )
+            self.solana_pack_status.configure(
+                text=(
+                    "✓ PAPER WORKSPACE READY · "
+                    + layer_note
+                    + " · deterministic risk gates active · SQLite trade memory initialized · "
+                    "live market discovery available."
+                )
+            )
+            self.solana_prepare_button.configure(text="PAPER WORKSPACE READY", state="disabled")
+            self.solana_scan_button.configure(state="normal")
+            self.app.log_queue.put(
+                f"[Pack] Solana Research workspace READY · {layer_note} · live market discovery enabled."
+            )
+
+        if self.app.runtime.server_running():
+            finish(self.app.current_profile(), None)
+        else:
+            profile = self.app.current_profile()
+            parallel = self.app.apollo_workers or 1
+
+            def worker() -> None:
+                try:
+                    started = self.app.runtime.start_server_with_gpu_fallback(
+                        profile,
+                        parallel=parallel,
+                        step=4,
+                        max_fallbacks=3,
+                        ready_timeout=45,
+                    )
+                    self.after(0, lambda: finish(started, None))
+                except Exception as exc:
+                    self.after(0, lambda: finish(None, str(exc)))
+
+            threading.Thread(target=worker, daemon=True).start()
 
     def _scan_solana_market(self) -> None:
         if not self.app.runtime.server_running():
