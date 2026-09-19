@@ -378,6 +378,8 @@ class BenchmarksScreen(BaseScreen):
                 ),
             )
         self.app.apollo_workers = summary.recommended_concurrency
+        self.app.settings.apollo_workers = summary.recommended_concurrency
+        save_settings(self.app.settings)
         self.worker_state.configure(
             text=f"✓ Apollo verified: {summary.recommended_concurrency} parallel AI worker(s)."
         )
@@ -497,6 +499,9 @@ class BenchmarksScreen(BaseScreen):
         self.app.gpu_layers.set(str(layers))
         self.app.apollo_gpu_layers = layers
         self.app.apollo_tokens_per_second = self.best_result.tokens_per_second
+        self.app.settings.apollo_gpu_layers = layers
+        self.app.settings.apollo_tokens_per_second = self.best_result.tokens_per_second
+        save_settings(self.app.settings)
         forge = self.app.screens.get("self_setup")
         if forge is not None and hasattr(forge, "refresh_apollo_result"):
             forge.refresh_apollo_result()
