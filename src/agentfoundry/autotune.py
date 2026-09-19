@@ -81,7 +81,15 @@ class AutoTuneRunner:
         if profile.context < 512:
             raise ValueError("Benchmark context must be at least 512 tokens.")
         executable = self.gpu._find_llama_server()
-        key = fingerprint(profile, executable, hardware, baseline)
+        recommendation = recommend_runtime(hardware, profile.model_path)
+        tuning_profile = profile
+        if profile.context > recommendation.context:
+            tuning_profile = replace(profile, context=recommendation.context)
+            self.log(
+                f"Safety context · reducing benchmark context from {profile.context:,} "
+                f"to {recommendation.context:,} tokens for this machine"
+            )
+        key = fingerprint(tuning_profile, executable, hardware, baseline)
         self.gpu.baseline = baseline
         self.log(f"Hardware analyzed · {hardware.summary}")
         self.log(f"Model detected · {model.name} · {model.stat().st_size / 1024 ** 3:.2f} GB")
@@ -89,14 +97,14 @@ class AutoTuneRunner:
         self.log("Quantization (filename hint): " + (quant.group() if quant else "unknown; exact file identity recorded"))
         self.log(f"Available RAM {baseline.available_ram_gb} GB · VRAM {baseline.free_vram_mb} MiB")
         if candidates is None:
-            center = recommend_runtime(hardware).gpu_layers
+            center = recommendation.gpu_layers
             candidates = sorted({max(0, center + offset) for offset in (-8, -4, 0, 4)}) if center else [0]
         if not candidates or any(type(value) is not int or not 0 <= value <= 200 for value in candidates):
             raise ValueError("GPU candidates must be between 0 and 200.")
-        results = self.gpu.run_many(profile, list(dict.fromkeys(candidates)), progress=progress, quick=quick)
+        results = self.gpu.run_many(tuning_profile, list(dict.fromkeys(candidates)), progress=progress, quick=quick)
         best = select_best_result(results)
         verification = workers = None
-        selected = profile
+        selected = tuning_profile
         if best is not None:
             selected = replace(profile, gpu_layers=best.gpu_layers)
             self.log("Verify configuration · reloading and confirming the winner")
@@ -110,7 +118,7 @@ class AutoTuneRunner:
         self.check_cancel()
         wait_for_memory(baseline, self.log)
         assert_idle(self.gpu.test_port)
-        if fingerprint(profile, executable) != key:
+        if fingerprint(tuning_profile, executable) != key:
             raise RuntimeError("Hardware, model or runtime changed during tuning. Retest required.")
         telemetry = (hardware.ram_gb > 0 and baseline.available_ram_gb is not None
                      and (hardware.vram_gb == 0 or baseline.free_vram_mb is not None)
