@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
+import os
 import time
 from typing import Any
 from urllib.parse import quote
@@ -35,6 +36,108 @@ class CandidateRiskAssessment:
     evidence: RiskEvidence
 
 
+class SolanaRpcRiskClient:
+    """Read-only Solana RPC fallback for incomplete third-party risk reports."""
+
+    def __init__(self, rpc_url: str | None = None, timeout: float = 12.0, opener=None) -> None:
+        self.rpc_url = rpc_url or os.environ.get("SOLANA_RPC_URL") or "https://api.mainnet-beta.solana.com"
+        self.timeout = timeout
+        self._opener = opener or urlopen
+        self._request_id = 0
+
+    def _rpc(self, method: str, params: list[Any]) -> Any:
+        self._request_id += 1
+        payload = json.dumps({
+            "jsonrpc": "2.0",
+            "id": self._request_id,
+            "method": method,
+            "params": params,
+        }).encode("utf-8")
+        request = Request(
+            self.rpc_url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "AgentFoundry/0.1 SolanaResearchPaper",
+            },
+            method="POST",
+        )
+        with self._opener(request, timeout=self.timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        if not isinstance(body, dict) or body.get("error"):
+            raise RuntimeError(f"Solana RPC {method} failed: {body.get('error') if isinstance(body, dict) else 'invalid response'}")
+        return body.get("result")
+
+    @staticmethod
+    def _raw_amount(value: Any) -> int:
+        try:
+            return int(str(value or "0"))
+        except (TypeError, ValueError):
+            return 0
+
+    def enrich(self, mint: str, creator: str = "") -> dict[str, Any]:
+        supply_result = self._rpc("getTokenSupply", [mint, {"commitment": "confirmed"}]) or {}
+        supply_value = supply_result.get("value") if isinstance(supply_result, dict) else {}
+        supply = self._raw_amount((supply_value or {}).get("amount"))
+        if supply <= 0:
+            raise RuntimeError("Solana RPC returned an invalid token supply.")
+
+        largest_result = self._rpc("getTokenLargestAccounts", [mint, {"commitment": "confirmed"}]) or {}
+        largest = largest_result.get("value") if isinstance(largest_result, dict) else []
+        largest = largest if isinstance(largest, list) else []
+        top10_amount = sum(
+            self._raw_amount(item.get("amount"))
+            for item in largest[:10]
+            if isinstance(item, dict)
+        )
+        top10_pct = (top10_amount / supply) * 100.0 if largest else None
+
+        account_result = self._rpc(
+            "getAccountInfo",
+            [mint, {"encoding": "jsonParsed", "commitment": "confirmed"}],
+        ) or {}
+        account = account_result.get("value") if isinstance(account_result, dict) else None
+        info = {}
+        if isinstance(account, dict):
+            data = account.get("data")
+            parsed = data.get("parsed") if isinstance(data, dict) else None
+            info = parsed.get("info") if isinstance(parsed, dict) and isinstance(parsed.get("info"), dict) else {}
+
+        mint_known = "mintAuthority" in info
+        freeze_known = "freezeAuthority" in info
+        mint_enabled = info.get("mintAuthority") is not None if mint_known else None
+        freeze_enabled = info.get("freezeAuthority") is not None if freeze_known else None
+
+        developer_pct = None
+        if creator:
+            owned_result = self._rpc(
+                "getTokenAccountsByOwner",
+                [creator, {"mint": mint}, {"encoding": "jsonParsed", "commitment": "confirmed"}],
+            ) or {}
+            accounts = owned_result.get("value") if isinstance(owned_result, dict) else []
+            accounts = accounts if isinstance(accounts, list) else []
+            developer_amount = 0
+            for row in accounts:
+                if not isinstance(row, dict):
+                    continue
+                account_data = row.get("account")
+                data = account_data.get("data") if isinstance(account_data, dict) else None
+                parsed = data.get("parsed") if isinstance(data, dict) else None
+                token_info = parsed.get("info") if isinstance(parsed, dict) else None
+                token_amount = token_info.get("tokenAmount") if isinstance(token_info, dict) else None
+                if isinstance(token_amount, dict):
+                    developer_amount += self._raw_amount(token_amount.get("amount"))
+            developer_pct = (developer_amount / supply) * 100.0
+
+        return {
+            "top10_holder_pct": top10_pct,
+            "developer_holding_pct": developer_pct,
+            "mint_authority_enabled": mint_enabled,
+            "freeze_authority_enabled": freeze_enabled,
+        }
+
+
 class RugCheckClient:
     """Read-only RugCheck adapter with defensive parsing.
 
@@ -42,10 +145,17 @@ class RugCheckClient:
     only evaluates a token after every required safety field is available.
     """
 
-    def __init__(self, timeout: float = 15.0, opener=None, delay_seconds: float = 0.35) -> None:
+    def __init__(
+        self,
+        timeout: float = 15.0,
+        opener=None,
+        delay_seconds: float = 0.35,
+        rpc_client: SolanaRpcRiskClient | None = None,
+    ) -> None:
         self.timeout = timeout
         self._opener = opener or urlopen
         self.delay_seconds = max(0.0, delay_seconds)
+        self.rpc_client = rpc_client or SolanaRpcRiskClient(timeout=timeout)
 
     def report(self, mint: str) -> dict[str, Any]:
         mint = mint.strip()
@@ -176,6 +286,58 @@ class RugCheckClient:
     ) -> CandidateRiskAssessment:
         report = self.report(candidate.token_address)
         evidence = self.parse(report)
+
+        # Fresh launches can have an incomplete RugCheck holder set for a short
+        # period. Fill only missing on-chain fields from read-only Solana RPC.
+        if any(name in evidence.missing for name in (
+            "top10_holder_pct",
+            "developer_holding_pct",
+            "mint_authority",
+            "freeze_authority",
+        )):
+            creator = str(report.get("creator") or "").strip()
+            try:
+                fallback = self.rpc_client.enrich(candidate.token_address, creator=creator)
+            except Exception as exc:
+                fallback = {}
+                rpc_warning = f"solana_rpc_fallback_failed:{type(exc).__name__}"
+            else:
+                rpc_warning = "solana_rpc_fallback_used"
+
+            top10 = evidence.top10_holder_pct
+            developer = evidence.developer_holding_pct
+            mint_enabled = evidence.mint_authority_enabled
+            freeze_enabled = evidence.freeze_authority_enabled
+            if top10 is None:
+                top10 = fallback.get("top10_holder_pct")
+            if developer is None:
+                developer = fallback.get("developer_holding_pct")
+            if mint_enabled is None:
+                mint_enabled = fallback.get("mint_authority_enabled")
+            if freeze_enabled is None:
+                freeze_enabled = fallback.get("freeze_authority_enabled")
+
+            missing = []
+            if top10 is None:
+                missing.append("top10_holder_pct")
+            if developer is None:
+                missing.append("developer_holding_pct")
+            if evidence.liquidity_locked is None:
+                missing.append("liquidity_lock")
+            if mint_enabled is None:
+                missing.append("mint_authority")
+            if freeze_enabled is None:
+                missing.append("freeze_authority")
+
+            evidence = replace(
+                evidence,
+                top10_holder_pct=top10,
+                developer_holding_pct=developer,
+                mint_authority_enabled=mint_enabled,
+                freeze_authority_enabled=freeze_enabled,
+                missing=tuple(missing),
+                warnings=evidence.warnings + (rpc_warning,),
+            )
 
         reasons: list[str] = []
         if evidence.rugged is True:
