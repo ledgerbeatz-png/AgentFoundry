@@ -377,9 +377,13 @@ class BenchmarksScreen(BaseScreen):
                     f"{result.average_latency_seconds:.2f}s",
                 ),
             )
+        self.app.apollo_workers = summary.recommended_concurrency
         self.worker_state.configure(
-            text=f"Apollo recommendation: {summary.recommended_concurrency} parallel AI worker(s)."
+            text=f"✓ Apollo verified: {summary.recommended_concurrency} parallel AI worker(s)."
         )
+        forge = self.app.screens.get("self_setup")
+        if forge is not None and hasattr(forge, "refresh_apollo_result"):
+            forge.refresh_apollo_result()
         self.app.log_queue.put(
             f"[Apollo] Recommended AI concurrency: {summary.recommended_concurrency} worker(s)."
         )
@@ -491,6 +495,11 @@ class BenchmarksScreen(BaseScreen):
             return
         layers = self.best_result.gpu_layers
         self.app.gpu_layers.set(str(layers))
+        self.app.apollo_gpu_layers = layers
+        self.app.apollo_tokens_per_second = self.best_result.tokens_per_second
+        forge = self.app.screens.get("self_setup")
+        if forge is not None and hasattr(forge, "refresh_apollo_result"):
+            forge.refresh_apollo_result()
         self.app.log_queue.put(
             f"[Apollo] Applied benchmark recommendation: {layers} GPU layers."
         )
@@ -639,6 +648,32 @@ class SelfSetupScreen(BaseScreen):
 
         self.info = None
         self.plan = None
+
+        self.apollo_status = ttk.LabelFrame(body, text="APOLLO · VERIFIED RESULT", style="Card.TLabelframe", padding=14)
+        self.apollo_status.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        self.apollo_result_text = ttk.Label(
+            self.apollo_status,
+            text="Not benchmarked yet · Run Apollo to verify this machine.",
+            style="GoldStatus.TLabel",
+        )
+        self.apollo_result_text.pack(anchor="w")
+        self.refresh_apollo_result()
+
+    def refresh_apollo_result(self) -> None:
+        layers = self.app.apollo_gpu_layers
+        workers = self.app.apollo_workers
+        tps = self.app.apollo_tokens_per_second
+        parts = []
+        if layers is not None:
+            parts.append(f"{layers} GPU layers")
+        if workers is not None:
+            parts.append(f"{workers} AI workers")
+        if tps is not None:
+            parts.append(f"{tps:.2f} tok/s")
+        if parts:
+            self.apollo_result_text.configure(text="✓ APOLLO VERIFIED · " + " · ".join(parts))
+        else:
+            self.apollo_result_text.configure(text="Not benchmarked yet · Run Apollo to verify this machine.")
 
     def _analyze(self) -> None:
         self.info = detect_hardware()
