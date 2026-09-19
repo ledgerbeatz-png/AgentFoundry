@@ -88,8 +88,13 @@ class BenchmarkRunner:
         self,
         profile: RuntimeProfile,
         gpu_layers: int,
-        prompt: str = "Reply with exactly: benchmark ready",
-        max_tokens: int = 48,
+        prompt: str = (
+            "You are a local trading research analyst. Given a hypothetical token with strong short-term "
+            "momentum but moderate holder concentration, produce a concise risk assessment with evidence, "
+            "counterarguments, and a final PAPER-RESEARCH action. Use roughly 120 words."
+        ),
+        max_tokens: int = 192,
+        measured_runs: int = 3,
     ) -> BenchmarkResult:
         model = Path(profile.model_path)
         if not model.is_file():
@@ -142,17 +147,33 @@ class BenchmarkRunner:
                 "temperature": 0,
             }
 
-            started = time.perf_counter()
-            response = self._post_json(
+            # Warm up the model/runtime so startup effects do not decide the winner.
+            warmup_payload = dict(payload)
+            warmup_payload["max_tokens"] = 24
+            self._post_json(
                 f"{test_profile.base_url}/chat/completions",
-                payload,
+                warmup_payload,
                 timeout=self.request_timeout,
             )
-            elapsed = max(time.perf_counter() - started, 0.001)
 
-            usage = response.get("usage") or {}
-            completion_tokens = int(usage.get("completion_tokens") or 0)
-            tokens_per_second = completion_tokens / elapsed if completion_tokens else 0.0
+            elapsed_runs: list[float] = []
+            token_runs: list[int] = []
+            for _ in range(max(1, measured_runs)):
+                started = time.perf_counter()
+                response = self._post_json(
+                    f"{test_profile.base_url}/chat/completions",
+                    payload,
+                    timeout=self.request_timeout,
+                )
+                elapsed_runs.append(max(time.perf_counter() - started, 0.001))
+                usage = response.get("usage") or {}
+                token_runs.append(int(usage.get("completion_tokens") or 0))
+
+            elapsed = sum(elapsed_runs) / len(elapsed_runs)
+            completion_tokens = round(sum(token_runs) / len(token_runs))
+            total_elapsed = sum(elapsed_runs)
+            total_tokens = sum(token_runs)
+            tokens_per_second = total_tokens / total_elapsed if total_tokens else 0.0
 
             self.log(
                 f"[Apollo] {gpu_layers} layers stable · {elapsed:.2f}s · "
@@ -221,13 +242,17 @@ class ConcurrencyBenchmarkRunner:
             raise RuntimeError("No model is available on the running local endpoint.")
         model_id = models[0]
         results: list[ConcurrencyResult] = []
-        prompt = "Reply with exactly: concurrency ready"
+        prompt = (
+            "Analyze this hypothetical paper-trading setup: momentum is rising, liquidity is adequate, "
+            "holder concentration is moderate, and no hard-risk flags are present. Return a concise "
+            "risk/opportunity assessment and PAPER action with reasons."
+        )
 
         for workers in concurrency_values:
             self.log(f"[Apollo] Testing concurrency {workers}…")
             wall_started = time.perf_counter()
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = [pool.submit(self._one, profile.base_url, model_id, prompt, 32) for _ in range(workers)]
+                futures = [pool.submit(self._one, profile.base_url, model_id, prompt, 128) for _ in range(workers)]
                 latencies = [future.result() for future in futures]
             wall = max(time.perf_counter() - wall_started, 0.001)
             result = ConcurrencyResult(
