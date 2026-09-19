@@ -867,7 +867,7 @@ class SelfSetupScreen(BaseScreen):
             text="PREPARE SOLANA RESEARCH",
             style="Gold.TButton",
             state="disabled",
-            command=self._prepare_solna_research,
+            command=self._prepare_solana_research,
         )
         self.solana_prepare_button.pack(side="left")
         ttk.Label(
@@ -926,7 +926,7 @@ class SelfSetupScreen(BaseScreen):
             state="disabled" if self.app.runtime.server_running() else "normal",
         ))
 
-    def _prepare_solna_research(self) -> None:
+    def _prepare_solana_research(self) -> None:
         try:
             pack = builtin_registry().get("trading.solana-research")
         except KeyError:
