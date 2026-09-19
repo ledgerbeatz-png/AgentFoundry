@@ -314,7 +314,12 @@ class AgentFoundryApp(tk.Tk):
         try:
             profile = self.current_profile()
             self.endpoint.set(profile.base_url)
-            self.runtime.start_server(profile)
+            parallel = (
+                self.apollo_workers
+                if self.settings.apollo_status in {"VERIFIED", "QUICK READY"} and self.apollo_workers
+                else 1
+            )
+            self.runtime.start_server(profile, parallel=parallel)
         except Exception as exc:
             messagebox.showerror("AgentFoundry", str(exc))
 
@@ -337,7 +342,12 @@ class AgentFoundryApp(tk.Tk):
         try:
             profile = self.current_profile()
             self.endpoint.set(profile.base_url)
-            self.runtime.start_server(profile)
+            parallel = (
+                self.apollo_workers
+                if self.settings.apollo_status in {"VERIFIED", "QUICK READY"} and self.apollo_workers
+                else 1
+            )
+            self.runtime.start_server(profile, parallel=parallel)
         except Exception as exc:
             messagebox.showerror("AgentFoundry", str(exc))
             return
