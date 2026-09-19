@@ -308,7 +308,6 @@ class BenchmarksScreen(BaseScreen):
             command=lambda: self._start("deep"),
         )
         self.verify_button.grid(row=1, column=4, rowspan=2, sticky="e", padx=(12, 0))
-        self.refresh_saved_result()
 
         results = ttk.LabelFrame(body, text="RESULTS", style="Card.TLabelframe", padding=10)
         results.grid(row=2, column=0, sticky="nsew")
@@ -370,6 +369,7 @@ class BenchmarksScreen(BaseScreen):
             self.worker_table.column(key, width=130, anchor="center")
         self.worker_table.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
+        self.refresh_saved_result()
         self.running = False
         self.events = queue.Queue()
         self.cancelled = threading.Event()
@@ -387,6 +387,36 @@ class BenchmarksScreen(BaseScreen):
         layers = self.app.settings.apollo_gpu_layers
         workers = self.app.settings.apollo_workers
         tps = self.app.settings.apollo_tokens_per_second
+        attempt = self.app.settings.apollo_last_attempt or {}
+
+        if hasattr(self, "table"):
+            for item in self.table.get_children():
+                self.table.delete(item)
+            for item in attempt.get("gpu_results") or []:
+                self.table.insert("", "end", values=(
+                    item.get("gpu_layers", "—"),
+                    "stable" if item.get("stable") else "failed",
+                    f'{float(item.get("latency_seconds") or 0):.2f}s' if item.get("stable") else "—",
+                    item.get("completion_tokens", "—") if item.get("stable") else "—",
+                    f'{float(item.get("tokens_per_second") or 0):.2f}' if item.get("stable") else "—",
+                ))
+
+        if hasattr(self, "worker_table"):
+            for item in self.worker_table.get_children():
+                self.worker_table.delete(item)
+            worker_summary = attempt.get("workers") or {}
+            for item in worker_summary.get("results") or []:
+                self.worker_table.insert("", "end", values=(
+                    item.get("concurrency", "—"),
+                    f'{float(item.get("wall_seconds") or 0):.2f}s',
+                    f'{float(item.get("throughput_rps") or 0):.3f}',
+                    f'{float(item.get("average_latency_seconds") or 0):.2f}s',
+                ))
+            if worker_summary.get("recommended_concurrency") is not None:
+                self.worker_state.configure(
+                    text=f'Saved candidate: {worker_summary["recommended_concurrency"]} AI worker(s) · {status}'
+                )
+
         if status in {"VERIFIED", "QUICK READY"} and layers is not None:
             self.result_status.configure(
                 text=("✓ VERIFIED" if status == "VERIFIED" else "⚡ QUICK READY"),
@@ -395,7 +425,23 @@ class BenchmarksScreen(BaseScreen):
             self.result_layers.configure(text=str(layers))
             self.result_workers.configure(text=str(workers) if workers is not None else "—")
             self.result_tps.configure(text=f"{tps:.2f}" if tps is not None else "—")
-            self.result_elapsed.configure(text="saved")
+
+            elapsed = attempt.get("elapsed_seconds")
+            self.result_elapsed.configure(text=self._format_elapsed(elapsed) if elapsed is not None else "saved")
+            completed_at = attempt.get("completed_at")
+            when = ""
+            if completed_at:
+                try:
+                    when = time.strftime("%d.%m.%Y %H:%M", time.localtime(float(completed_at)))
+                except (TypeError, ValueError, OSError):
+                    when = ""
+            reason = attempt.get("reason") or "Saved Apollo profile restored."
+            self.recommendation.configure(
+                text=(f"Last run {when} · {reason}" if when else reason),
+                wraplength=720,
+            )
+            self.activity_detail.configure(text="Saved Apollo optimization restored.")
+            self.activity_var.set(100)
             if status == "QUICK READY":
                 self.verify_button.configure(text="RUN DEEP VERIFICATION", state="normal")
             else:
@@ -406,6 +452,8 @@ class BenchmarksScreen(BaseScreen):
             self.result_workers.configure(text="—")
             self.result_tps.configure(text="—")
             self.result_elapsed.configure(text="—")
+            if not (attempt.get("gpu_results") or attempt.get("workers")):
+                self.recommendation.configure(text="No benchmark result yet.")
             self.verify_button.configure(text="RUN DEEP VERIFICATION", state="disabled")
 
     def _set_result_card(self, result, elapsed):
@@ -587,7 +635,10 @@ class BenchmarksScreen(BaseScreen):
             settings = self.app.settings
             # One atomic settings write contains evidence, workers and the full selected profile.
             from dataclasses import replace
-            updated = replace(settings, apollo_last_attempt=asdict(result), apollo_status=result.status)
+            attempt = asdict(result)
+            attempt["elapsed_seconds"] = int(time.monotonic() - self.started)
+            attempt["completed_at"] = time.time()
+            updated = replace(settings, apollo_last_attempt=attempt, apollo_status=result.status)
             if result.status in {"VERIFIED", "QUICK READY"}:
                 updated.apollo_profile = result.profile
                 updated.apollo_fingerprint = result.fingerprint
