@@ -114,7 +114,9 @@ class AgentFoundryApp(tk.Tk):
 
     def _validate_saved_tune(self, restore=False):
         """Read system identity off the UI thread before reusing a saved optimization."""
-        if self.tuning_active or self._apollo_saved_status != "VERIFIED" or not self.settings.apollo_profile:
+        if (self.tuning_active
+                or self._apollo_saved_status not in {"VERIFIED", "QUICK READY"}
+                or not self.settings.apollo_profile):
             return
         try:
             current = self.current_profile()
@@ -151,9 +153,12 @@ class AgentFoundryApp(tk.Tk):
                         (self.kv_k, candidate.kv_cache_k), (self.kv_v, candidate.kv_cache_v),
                         (self.rope_scale, candidate.rope_scale), (self.yarn_orig_ctx, candidate.yarn_orig_ctx)):
                         variable.set(str(value))
-                self.settings.apollo_status = "VERIFIED"
+                self.settings.apollo_status = self._apollo_saved_status
                 self.apollo_workers = self.settings.apollo_workers
             self.screens["self_setup"].refresh_apollo_result()
+            benchmarks = self.screens.get("benchmarks")
+            if benchmarks is not None and hasattr(benchmarks, "refresh_saved_result"):
+                benchmarks.refresh_saved_result()
 
         threading.Thread(target=worker, daemon=True).start()
         self.after(100, finish)
