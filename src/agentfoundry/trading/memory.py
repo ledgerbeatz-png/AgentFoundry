@@ -119,6 +119,45 @@ class TradeMemory:
             )
         )
 
+    def open_trade_for_candidate(self, candidate_id: str):
+        rows = self.db.execute(
+            "SELECT t.*, d.market_json FROM trades t "
+            "JOIN decisions d ON d.trade_id=t.trade_id "
+            "WHERE t.status='open' ORDER BY d.observed_at DESC"
+        ).fetchall()
+        for row in rows:
+            try:
+                market = json.loads(row["market_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if str(market.get("candidate_id") or market.get("token_address") or "") == candidate_id:
+                return row
+        return None
+
+    def open_trades_with_market(self) -> list[sqlite3.Row]:
+        return list(self.db.execute(
+            "SELECT t.*, d.market_json FROM trades t "
+            "JOIN decisions d ON d.id=("
+            "SELECT d2.id FROM decisions d2 WHERE d2.trade_id=t.trade_id "
+            "ORDER BY d2.observed_at DESC LIMIT 1"
+            ") WHERE t.status='open' ORDER BY t.opened_at"
+        ))
+
+    def outcome_horizons(self, trade_id: str) -> list[str]:
+        return [
+            str(row["horizon"])
+            for row in self.db.execute(
+                "SELECT horizon FROM outcomes WHERE trade_id=? ORDER BY observed_at",
+                (trade_id,),
+            )
+        ]
+
+    def outcomes_for_trade(self, trade_id: str) -> list[sqlite3.Row]:
+        return list(self.db.execute(
+            "SELECT * FROM outcomes WHERE trade_id=? ORDER BY observed_at",
+            (trade_id,),
+        ))
+
     def close_trade(self, trade_id: str, closed_at: float, exit_price: float, realized_pnl_pct: float, mfe_pct: float, mae_pct: float) -> None:
         self.db.execute(
             "UPDATE trades SET status='closed',closed_at=?,exit_price=?,realized_pnl_pct=?,mfe_pct=?,mae_pct=? WHERE trade_id=?",
