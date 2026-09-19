@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import time
+import statistics
 import concurrent.futures
 import urllib.error
 import urllib.request
@@ -25,6 +26,7 @@ class BenchmarkResult:
     completion_tokens: int = 0
     tokens_per_second: float = 0.0
     error: str = ""
+    variability_pct: float = 0.0
 
     @property
     def status(self) -> str:
@@ -169,11 +171,17 @@ class BenchmarkRunner:
                 usage = response.get("usage") or {}
                 token_runs.append(int(usage.get("completion_tokens") or 0))
 
-            elapsed = sum(elapsed_runs) / len(elapsed_runs)
-            completion_tokens = round(sum(token_runs) / len(token_runs))
-            total_elapsed = sum(elapsed_runs)
-            total_tokens = sum(token_runs)
-            tokens_per_second = total_tokens / total_elapsed if total_tokens else 0.0
+            elapsed = statistics.median(elapsed_runs)
+            completion_tokens = round(statistics.median(token_runs))
+            run_tps = [
+                tokens / seconds if tokens else 0.0
+                for tokens, seconds in zip(token_runs, elapsed_runs)
+            ]
+            tokens_per_second = statistics.median(run_tps)
+            variability_pct = (
+                (max(run_tps) - min(run_tps)) / tokens_per_second * 100.0
+                if tokens_per_second > 0 and len(run_tps) > 1 else 0.0
+            )
 
             self.log(
                 f"[Apollo] {gpu_layers} layers stable · {elapsed:.2f}s · "
@@ -185,6 +193,7 @@ class BenchmarkRunner:
                 latency_seconds=elapsed,
                 completion_tokens=completion_tokens,
                 tokens_per_second=tokens_per_second,
+                variability_pct=variability_pct,
             )
         except (urllib.error.URLError, TimeoutError, subprocess.SubprocessError, OSError, ValueError) as exc:
             self.log(f"[Apollo] {gpu_layers} layers failed: {exc}")
@@ -248,18 +257,28 @@ class ConcurrencyBenchmarkRunner:
             "risk/opportunity assessment and PAPER action with reasons."
         )
 
+        # Warm the live endpoint before comparing worker counts.
+        self._one(profile.base_url, model_id, "Reply briefly: warmup", 24)
+        cycles = 3
         for workers in concurrency_values:
-            self.log(f"[Apollo] Testing concurrency {workers}…")
-            wall_started = time.perf_counter()
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = [pool.submit(self._one, profile.base_url, model_id, prompt, 128) for _ in range(workers)]
-                latencies = [future.result() for future in futures]
-            wall = max(time.perf_counter() - wall_started, 0.001)
+            self.log(f"[Apollo] Testing concurrency {workers} across {cycles} cycles…")
+            walls: list[float] = []
+            throughputs: list[float] = []
+            average_latencies: list[float] = []
+            for _ in range(cycles):
+                wall_started = time.perf_counter()
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = [pool.submit(self._one, profile.base_url, model_id, prompt, 128) for _ in range(workers)]
+                    latencies = [future.result() for future in futures]
+                wall = max(time.perf_counter() - wall_started, 0.001)
+                walls.append(wall)
+                throughputs.append(workers / wall)
+                average_latencies.append(sum(latencies) / len(latencies))
             result = ConcurrencyResult(
                 concurrency=workers,
-                wall_seconds=wall,
-                throughput_rps=workers / wall,
-                average_latency_seconds=sum(latencies) / len(latencies),
+                wall_seconds=statistics.median(walls),
+                throughput_rps=statistics.median(throughputs),
+                average_latency_seconds=statistics.median(average_latencies),
             )
             results.append(result)
             self.log(f"[Apollo] {workers} workers · {result.throughput_rps:.3f} req/s · {result.average_latency_seconds:.2f}s avg")
