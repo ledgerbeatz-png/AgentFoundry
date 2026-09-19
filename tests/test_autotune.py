@@ -129,12 +129,12 @@ def tuning(monkeypatch, tmp_path):
     monkeypatch.setattr(runner.gpu, "run_one", lambda *_args, **_kwargs: measured(20, 10))
     sessions = []
     @contextmanager
-    def session(selected):
-        sessions.append(("start", selected.gpu_layers))
+    def session(selected, parallel=1):
+        sessions.append(("start", selected.gpu_layers, parallel))
         try:
             yield selected
         finally:
-            sessions.append(("stop", selected.gpu_layers))
+            sessions.append(("stop", selected.gpu_layers, parallel))
     monkeypatch.setattr(runner.gpu, "session", session)
     monkeypatch.setattr(autotune.ConcurrencyBenchmarkRunner, "run", lambda *_args, **_kwargs:
         ConcurrencyBenchmarkSummary([ConcurrencyResult(2, 10, .2, 8)], 2))
@@ -162,7 +162,7 @@ def test_full_auto_tune_uses_winner_for_workers(tuning):
     assert result.status == "VERIFIED"
     assert result.profile["gpu_layers"] == 20
     assert result.workers["recommended_concurrency"] == 2
-    assert sessions == [("start", 20), ("stop", 20)]
+    assert sessions == [("start", 20, 4), ("stop", 20, 4)]
     assert profile.gpu_layers == 20
 
 
@@ -173,7 +173,7 @@ def test_worker_failure_cleans_up_and_does_not_return_profile(tuning, monkeypatc
     monkeypatch.setattr(autotune.ConcurrencyBenchmarkRunner, "run", fail)
     with pytest.raises(TimeoutError):
         runner.run(profile)
-    assert sessions[-1] == ("stop", 20)
+    assert sessions[-1] == ("stop", 20, 4)
 
 
 def test_quick_never_verified(tuning):
