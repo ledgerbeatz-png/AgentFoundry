@@ -21,7 +21,7 @@ def measured(layers=12, speed=10, spread=2):
 
 @pytest.mark.parametrize("quick,telemetry,spread,retest_speed,expected", [
     (False, True, 2, 10, "VERIFIED"),
-    (True, True, 0, 10, "UNCERTAIN"),
+    (True, True, 0, 10, "QUICK READY"),
     (False, False, 2, 10, "UNCERTAIN"),
     (False, True, 25, 10, "UNCERTAIN"),
     (False, True, 2, 6, "UNCERTAIN"),
@@ -156,6 +156,39 @@ def test_auto_tune_caps_unsafe_context_to_hardware_recommendation(tuning, monkey
     assert result.profile["context"] == 32768
 
 
+def test_quick_uses_reduced_candidate_set(monkeypatch, tmp_path):
+    model = tmp_path / "qwen-IQ4_XS.gguf"
+    model.write_bytes(b"GGUF")
+    profile = RuntimeProfile(str(model), context=32768)
+    hardware = HardwareInfo("Windows", "11", "AMD64", "CPU", 15.7, "GPU", 7.96)
+    monkeypatch.setattr(autotune, "assert_idle", lambda _: None)
+    monkeypatch.setattr(autotune, "detect_hardware", lambda: hardware)
+    monkeypatch.setattr(autotune, "memory_snapshot", lambda: environment.MemorySnapshot(8, 6000))
+    monkeypatch.setattr(autotune, "fingerprint", lambda *_args, **_kwargs: "identity")
+    monkeypatch.setattr(autotune, "wait_for_memory", lambda *_args, **_kwargs: None)
+    runner = AutoTuneRunner("llama")
+    seen = {}
+
+    def run_many(_profile, candidates, **kwargs):
+        seen["candidates"] = candidates
+        seen["quick"] = kwargs["quick"]
+        return [measured(candidates[0], 8), measured(candidates[-1], 10)]
+
+    monkeypatch.setattr(runner.gpu, "run_many", run_many)
+    monkeypatch.setattr(runner.gpu, "run_one", lambda *_args, **_kwargs: measured(24, 10))
+    @contextmanager
+    def session(selected, parallel=1):
+        yield selected
+    monkeypatch.setattr(runner.gpu, "session", session)
+    monkeypatch.setattr(autotune.ConcurrencyBenchmarkRunner, "run", lambda *_args, **_kwargs:
+        ConcurrencyBenchmarkSummary([ConcurrencyResult(2, 10, .2, 8)], 2))
+
+    result = runner.run(profile, quick=True)
+
+    assert seen == {"candidates": [16, 20, 24], "quick": True}
+    assert result.status == "QUICK READY"
+
+
 def test_full_auto_tune_uses_winner_for_workers(tuning):
     runner, profile, sessions = tuning
     result = runner.run(profile)
@@ -176,9 +209,9 @@ def test_worker_failure_cleans_up_and_does_not_return_profile(tuning, monkeypatc
     assert sessions[-1] == ("stop", 20, 4)
 
 
-def test_quick_never_verified(tuning):
+def test_quick_returns_provisional_ready_status(tuning):
     runner, profile, _ = tuning
-    assert runner.run(profile, quick=True).status == "UNCERTAIN"
+    assert runner.run(profile, quick=True).status == "QUICK READY"
 
 
 def test_cancel_does_not_return_success(tuning):
