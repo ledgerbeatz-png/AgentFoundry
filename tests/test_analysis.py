@@ -140,3 +140,19 @@ def test_local_qwen_repairs_invalid_json_once():
     assert len(calls) == 2
     assert calls[0]["response_format"] == {"type": "json_object"}
     assert "Preserve its conclusion exactly" in calls[1]["messages"][0]["content"]
+
+
+def test_partial_core_salvages_truncated_json():
+    text = (
+        '{"action":"PAPER_BUY","confidence":0.75,'
+        '"thesis":"SOURCE shows positive market momentum.",'
+        '"reasons":["buy pressure", "liquidity is'
+    )
+
+    value = LocalQwenAnalyst._extract_partial_core(text)
+
+    assert value["action"] == "PAPER_BUY"
+    assert value["confidence"] == 0.75
+    assert value["thesis"] == "SOURCE shows positive market momentum."
+    assert value["reasons"] == []
+    assert value["_recovered_from_truncated_output"] is True
