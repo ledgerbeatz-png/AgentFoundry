@@ -15,7 +15,7 @@ from .hardware import detect_hardware, recommend_runtime
 from .packs import builtin_registry
 from .self_setup import build_self_setup_plan
 from .runtime import RuntimeProfile
-from .settings import detect_runtime_paths
+from .settings import detect_runtime_paths, save_settings
 from .theme import COLORS
 
 
