@@ -920,8 +920,9 @@ class SelfSetupScreen(BaseScreen):
             )
             self.start_optimized_button.configure(state="normal")
             self.solana_prepare_button.configure(state="normal")
-            if self.app.runtime.server_running():
+            if self.app.runtime.endpoint_ready(self.app.current_profile()):
                 self.solana_scan_button.configure(state="normal")
+                self.start_optimized_button.configure(text="RUNTIME RUNNING", state="disabled")
             self.solana_pack_status.configure(
                 text="READY TO PREPARE · Apollo profile available · local model selected · PAPER ONLY."
             )
