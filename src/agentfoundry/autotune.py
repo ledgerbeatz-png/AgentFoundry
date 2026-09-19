@@ -112,7 +112,7 @@ class AutoTuneRunner:
                                              measured_runs=1 if quick else 3)
             if verification.stable:
                 self.log("AI worker optimization · temporary runtime with selected GPU settings")
-                with self.gpu.session(selected) as temporary:
+                with self.gpu.session(selected, parallel=4) as temporary:
                     workers = ConcurrencyBenchmarkRunner(request_timeout=300, log=self.log,
                         check_cancel=self.check_cancel).run(temporary, quick=quick)
         self.check_cancel()
