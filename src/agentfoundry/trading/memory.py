@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,20 @@ class TradeMemory:
             price REAL NOT NULL, return_from_entry_pct REAL NOT NULL,
             PRIMARY KEY(trade_id, horizon), FOREIGN KEY(trade_id) REFERENCES trades(trade_id)
         );
+        CREATE TABLE IF NOT EXISTS research_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            candidate_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            observed_at REAL NOT NULL,
+            action TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            thesis TEXT NOT NULL,
+            market_json TEXT NOT NULL,
+            risk_json TEXT NOT NULL,
+            analysis_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_research_decisions_candidate_time
+            ON research_decisions(candidate_id, observed_at);
         """)
         self.db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)", (str(SCHEMA_VERSION),))
         self.db.commit()
@@ -67,6 +81,43 @@ class TradeMemory:
             (trade_id, observed_at, action, json.dumps(reasons), json.dumps(market, sort_keys=True)),
         )
         self.db.commit()
+
+    def add_research_decision(
+        self,
+        candidate_id: str,
+        symbol: str,
+        observed_at: float,
+        action: str,
+        confidence: float,
+        thesis: str,
+        market: dict[str, Any],
+        risk: dict[str, Any],
+        analysis: dict[str, Any],
+    ) -> None:
+        self.db.execute(
+            "INSERT INTO research_decisions(candidate_id,symbol,observed_at,action,confidence,thesis,market_json,risk_json,analysis_json) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                candidate_id,
+                symbol,
+                observed_at,
+                action,
+                float(confidence),
+                thesis,
+                json.dumps(market, sort_keys=True),
+                json.dumps(risk, sort_keys=True),
+                json.dumps(analysis, sort_keys=True),
+            ),
+        )
+        self.db.commit()
+
+    def research_decisions(self, limit: int = 100) -> list[sqlite3.Row]:
+        return list(
+            self.db.execute(
+                "SELECT * FROM research_decisions ORDER BY observed_at DESC LIMIT ?",
+                (max(1, int(limit)),),
+            )
+        )
 
     def close_trade(self, trade_id: str, closed_at: float, exit_price: float, realized_pnl_pct: float, mfe_pct: float, mae_pct: float) -> None:
         self.db.execute(
