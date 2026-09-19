@@ -489,9 +489,19 @@ class BenchmarksScreen(BaseScreen):
     def _apply_best(self) -> None:
         if self.best_result is None:
             return
-        self.app.gpu_layers.set(str(self.best_result.gpu_layers))
+        layers = self.best_result.gpu_layers
+        self.app.gpu_layers.set(str(layers))
         self.app.log_queue.put(
-            f"[Apollo] Applied benchmark recommendation: {self.best_result.gpu_layers} GPU layers."
+            f"[Apollo] Applied benchmark recommendation: {layers} GPU layers."
+        )
+        self.recommendation.configure(
+            text=f"✓ Applied: {layers} GPU layers. Save/apply the profile before the next runtime start."
+        )
+        self.apply_button.configure(text="✓ APPLIED", state="disabled")
+        messagebox.showinfo(
+            "Apollo · Recommendation applied",
+            f"Applied {layers} GPU layers to the current AgentFoundry profile.\n\n"
+            "The new value will be used for the next runtime start.",
         )
 
 
