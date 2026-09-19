@@ -40,34 +40,53 @@ class SolanaRpcRiskClient:
     """Read-only Solana RPC fallback for incomplete third-party risk reports."""
 
     def __init__(self, rpc_url: str | None = None, timeout: float = 12.0, opener=None) -> None:
-        self.rpc_url = rpc_url or os.environ.get("SOLANA_RPC_URL") or "https://api.mainnet-beta.solana.com"
+        configured = rpc_url or os.environ.get("SOLANA_RPC_URL")
+        defaults = [
+            "https://api.mainnet.solana.com",
+            "https://api.mainnet-beta.solana.com",
+            "https://solana-rpc.publicnode.com",
+        ]
+        self.rpc_urls = []
+        for url in ([configured] if configured else []) + defaults:
+            if url and url not in self.rpc_urls:
+                self.rpc_urls.append(url)
         self.timeout = timeout
         self._opener = opener or urlopen
         self._request_id = 0
+        self.last_rpc_url = ""
 
     def _rpc(self, method: str, params: list[Any]) -> Any:
-        self._request_id += 1
-        payload = json.dumps({
-            "jsonrpc": "2.0",
-            "id": self._request_id,
-            "method": method,
-            "params": params,
-        }).encode("utf-8")
-        request = Request(
-            self.rpc_url,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": "AgentFoundry/0.1 SolanaResearchPaper",
-            },
-            method="POST",
-        )
-        with self._opener(request, timeout=self.timeout) as response:
-            body = json.loads(response.read().decode("utf-8"))
-        if not isinstance(body, dict) or body.get("error"):
-            raise RuntimeError(f"Solana RPC {method} failed: {body.get('error') if isinstance(body, dict) else 'invalid response'}")
-        return body.get("result")
+        errors: list[str] = []
+        for rpc_url in self.rpc_urls:
+            self._request_id += 1
+            payload = json.dumps({
+                "jsonrpc": "2.0",
+                "id": self._request_id,
+                "method": method,
+                "params": params,
+            }).encode("utf-8")
+            request = Request(
+                rpc_url,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "User-Agent": "AgentFoundry/0.1 SolanaResearchPaper",
+                },
+                method="POST",
+            )
+            try:
+                with self._opener(request, timeout=self.timeout) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+                if not isinstance(body, dict) or body.get("error"):
+                    raise RuntimeError(
+                        str(body.get("error") if isinstance(body, dict) else "invalid response")
+                    )
+                self.last_rpc_url = rpc_url
+                return body.get("result")
+            except Exception as exc:
+                errors.append(f"{rpc_url}: {type(exc).__name__}: {exc}")
+        raise RuntimeError(f"Solana RPC {method} failed on all endpoints: {' | '.join(errors)}")
 
     @staticmethod
     def _raw_amount(value: Any) -> int:
@@ -300,9 +319,9 @@ class RugCheckClient:
                 fallback = self.rpc_client.enrich(candidate.token_address, creator=creator)
             except Exception as exc:
                 fallback = {}
-                rpc_warning = f"solana_rpc_fallback_failed:{type(exc).__name__}"
+                rpc_warning = f"solana_rpc_fallback_failed:{type(exc).__name__}:{str(exc)[:160]}"
             else:
-                rpc_warning = "solana_rpc_fallback_used"
+                rpc_warning = "solana_rpc_fallback_used:" + (self.rpc_client.last_rpc_url or "custom")
 
             top10 = evidence.top10_holder_pct
             developer = evidence.developer_holding_pct
