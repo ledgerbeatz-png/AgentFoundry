@@ -16,6 +16,20 @@ from .risk import RiskDecision, RiskPolicy, TokenSnapshot, evaluate_snapshot
 RUGCHECK_BASE = "https://api.rugcheck.xyz"
 
 
+def redact_rpc_url(url: str) -> str:
+    """Keep provider identity visible without leaking API keys or query secrets."""
+    if not url:
+        return ""
+    try:
+        from urllib.parse import urlsplit
+        parts = urlsplit(url)
+        if not parts.scheme or not parts.netloc:
+            return "[configured RPC]"
+        return f"{parts.scheme}://{parts.netloc}{parts.path}"
+    except Exception:
+        return "[configured RPC]"
+
+
 @dataclass(frozen=True)
 class RiskEvidence:
     top10_holder_pct: float | None
@@ -371,7 +385,7 @@ class RugCheckClient:
                 fallback = {}
                 rpc_warning = f"solana_rpc_fallback_failed:{type(exc).__name__}:{str(exc)[:160]}"
             else:
-                rpc_warning = "solana_rpc_fallback_used:" + (self.rpc_client.last_rpc_url or "custom")
+                rpc_warning = "solana_rpc_fallback_used:" + redact_rpc_url(self.rpc_client.last_rpc_url or "custom")
 
             top10 = evidence.top10_holder_pct
             developer = evidence.developer_holding_pct
