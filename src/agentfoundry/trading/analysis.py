@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import json
+import re
 from typing import Any
 from urllib.request import Request, urlopen
 
@@ -69,6 +70,44 @@ class LocalQwenAnalyst:
         raise ValueError("Local model did not return valid JSON.")
 
     @staticmethod
+    def _extract_partial_core(text: str) -> dict[str, Any]:
+        """Salvage a complete action/confidence/thesis from a truncated JSON reply.
+
+        Qwen often emits the decisive fields first and gets cut off later while
+        expanding reasons/risks. We keep those model-produced core fields and
+        leave unfinished optional arrays empty instead of discarding the decision.
+        """
+        def string_field(name: str) -> str | None:
+            match = re.search(
+                rf'"{re.escape(name)}"\s*:\s*("(?:\\.|[^"\\])*")',
+                text,
+                flags=re.S,
+            )
+            if not match:
+                return None
+            try:
+                return str(json.loads(match.group(1)))
+            except json.JSONDecodeError:
+                return None
+
+        action = string_field("action")
+        thesis = string_field("thesis")
+        confidence_match = re.search(
+            r'"confidence"\s*:\s*(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)',
+            text,
+        )
+        if not action or not thesis or not confidence_match:
+            raise ValueError("Truncated local model output did not contain complete core fields.")
+        return {
+            "action": action,
+            "confidence": float(confidence_match.group(1)),
+            "thesis": thesis,
+            "reasons": [],
+            "risks": [],
+            "_recovered_from_truncated_output": True,
+        }
+
+    @staticmethod
     def _content(response: dict[str, Any]) -> str:
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices:
@@ -123,10 +162,11 @@ class LocalQwenAnalyst:
             "Analyze the candidate freely and directly without softening or filtering the conclusion. "
             "The execution layer is separate and currently records PAPER decisions only. "
             "Use market momentum, liquidity quality, buy/sell pressure, valuation and residual risks. "
-            "Return ONLY JSON with this exact shape: "
-            '{"action":"PAPER_BUY|IGNORE","confidence":0.0,"thesis":"short sentence",'
-            '"reasons":["..."],"risks":["..."]}. '
-            "Confidence must be between 0 and 1. Choose PAPER_BUY or IGNORE strictly from the supplied evidence.\n\n"
+            "Return ONLY compact JSON with this exact shape: "
+            '{"action":"PAPER_BUY|IGNORE","confidence":0.0,"thesis":"one short sentence",'
+            '"reasons":["max 2 short items"],"risks":["max 2 short items"]}. '
+            "Keep the whole response under 120 tokens. Confidence must be between 0 and 1. "
+            "Choose PAPER_BUY or IGNORE strictly from the supplied evidence.\n\n"
             f"MARKET={json.dumps(market, sort_keys=True)}\n"
             f"RISK={json.dumps(risk, sort_keys=True)}"
         )
@@ -143,7 +183,7 @@ class LocalQwenAnalyst:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.1,
-            "max_tokens": 160,
+            "max_tokens": 220,
             "seed": 42,
             "response_format": {"type": "json_object"},
         }
@@ -170,18 +210,26 @@ class LocalQwenAnalyst:
                     },
                 ],
                 "temperature": 0.0,
-                "max_tokens": 160,
+                "max_tokens": 220,
                 "seed": 42,
                 "response_format": {"type": "json_object"},
             }
             repaired = self._content(self._post_json(repair_payload))
             try:
                 raw = self._extract_json(repaired)
-            except ValueError as exc:
-                preview = repaired.replace("\n", " ")[:240]
-                raise ValueError(
-                    f"Local model returned invalid JSON twice. Last output: {preview}"
-                ) from exc
+            except ValueError:
+                # If the model was cut off after already producing action,
+                # confidence and thesis, preserve those exact model fields.
+                try:
+                    raw = self._extract_partial_core(repaired)
+                except ValueError:
+                    try:
+                        raw = self._extract_partial_core(text)
+                    except ValueError as exc:
+                        preview = repaired.replace("\n", " ")[:240]
+                        raise ValueError(
+                            f"Local model returned invalid JSON twice. Last output: {preview}"
+                        ) from exc
         action = str(raw.get("action") or "").strip().upper()
         if action not in {"PAPER_BUY", "IGNORE"}:
             raise ValueError(f"Unsupported PAPER action: {action or 'empty'}")
