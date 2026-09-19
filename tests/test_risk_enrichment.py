@@ -89,8 +89,8 @@ class FakeRpc:
         self.payload = payload
         self.calls = []
 
-    def enrich(self, mint, creator=""):
-        self.calls.append((mint, creator))
+    def enrich(self, mint, creator="", supply=None, need_authorities=False):
+        self.calls.append((mint, creator, supply, need_authorities))
         return dict(self.payload)
 
 
@@ -109,7 +109,7 @@ def test_rpc_fallback_fills_missing_holder_and_developer_evidence(monkeypatch):
 
     assessment = client.assess(candidate())
 
-    assert rpc.calls == [("A" * 32, "DEV")]
+    assert rpc.calls == [("A" * 32, "DEV", None, False)]
     assert assessment.evidence.top10_holder_pct == 31.5
     assert assessment.evidence.developer_holding_pct == 4.25
     assert assessment.status == "PASS"
