@@ -42,7 +42,18 @@ class AgentFoundryApp(tk.Tk):
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.settings = load_settings()
         self.tuning_active = False
-        self._apollo_saved_status = self.settings.apollo_status
+        recovered_status = (
+            (self.settings.apollo_last_attempt or {}).get("status")
+            if self.settings.apollo_profile and self.settings.apollo_fingerprint
+            else None
+        )
+        self._apollo_saved_status = (
+            self.settings.apollo_status
+            if self.settings.apollo_status in {"VERIFIED", "QUICK READY"}
+            else recovered_status
+            if recovered_status in {"VERIFIED", "QUICK READY"}
+            else self.settings.apollo_status
+        )
         self.settings.apollo_status = "RETEST REQUIRED"
         self._apollo_check = 0
         try:
@@ -291,8 +302,9 @@ class AgentFoundryApp(tk.Tk):
         if isinstance(home, HomeScreen):
             home.refresh()
 
-    def save_app_settings(self) -> None:
-        self._profile_changed()
+    def save_app_settings(self, invalidate_apollo: bool = False) -> None:
+        if invalidate_apollo:
+            self._profile_changed()
         save_settings(self.settings)
         self.runtime.llama_server_path = self.settings.llama_server_path
         self.runtime.hermes_path = self.settings.hermes_path
