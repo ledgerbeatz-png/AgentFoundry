@@ -22,6 +22,7 @@ from .self_setup import build_self_setup_plan
 from .runtime import RuntimeProfile
 from .settings import APP_DIR, detect_runtime_paths, save_settings
 from .theme import COLORS
+from .trading.analysis import LocalQwenAnalyst, analysis_record
 from .trading.market_data import DexScreenerSolanaFeed
 from .trading.memory import TradeMemory
 from .trading.risk_enrichment import RugCheckClient, SolanaRpcRiskClient
@@ -1096,6 +1097,76 @@ class SelfSetupScreen(BaseScreen):
             self.app.log_queue.put(
                 f"[Pack] Risk gate complete · {passed}/{checked} candidates passed. "
                 "No live trade action was available or executed."
+            )
+            if passed:
+                self._run_qwen_paper_analysis(
+                    [item for item in assessments if item.status == "PASS"],
+                    lines,
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _run_qwen_paper_analysis(self, passed_assessments, base_lines) -> None:
+        self.solana_scan_button.configure(text="QWEN ANALYZING…", state="disabled")
+        self.market_status.configure(
+            text="\n".join(base_lines + ["", "QWEN PAPER ANALYSIS · evaluating PASS candidates locally…"])
+        )
+
+        def worker() -> None:
+            try:
+                profile = self.app.current_profile()
+                models = self.app.runtime.get_models(profile)
+                if not models:
+                    raise RuntimeError("Local runtime is online but exposes no model id.")
+                analyst = LocalQwenAnalyst(profile.base_url, models[0])
+                rows = []
+                database = APP_DIR / "paper" / "solana-research.sqlite3"
+                memory = TradeMemory(database)
+                try:
+                    for assessment in passed_assessments:
+                        analysis = analyst.analyze(assessment)
+                        record = analysis_record(assessment, analysis)
+                        memory.add_research_decision(
+                            candidate_id=assessment.candidate.token_address,
+                            symbol=assessment.candidate.symbol,
+                            observed_at=time.time(),
+                            action=analysis.action,
+                            confidence=analysis.confidence,
+                            thesis=analysis.thesis,
+                            market=record["market"],
+                            risk=record["risk"],
+                            analysis=record["analysis"],
+                        )
+                        rows.append((assessment, analysis, None))
+                finally:
+                    memory.close()
+                self.after(0, lambda: finish(rows, None))
+            except Exception as exc:
+                self.after(0, lambda: finish([], str(exc)))
+
+        def finish(rows, error) -> None:
+            self.solana_scan_button.configure(text="SCAN + RISK CHECK", state="normal")
+            lines = list(base_lines)
+            lines.append("")
+            lines.append("QWEN PAPER ANALYSIS · LOCAL MODEL · NO LIVE EXECUTION")
+            if error:
+                lines.append(f"! AI ANALYSIS ERROR · {error}")
+                self.market_status.configure(text="\n".join(lines))
+                self.app.log_queue.put(f"[Pack] Qwen paper analysis failed: {error}")
+                return
+
+            for assessment, analysis, _unused in rows:
+                icon = "◆" if analysis.action == "PAPER_BUY" else "·"
+                lines.append(
+                    f"{icon} {analysis.action:<9} {assessment.candidate.symbol:<10} · "
+                    f"confidence {analysis.confidence:.0%} · {analysis.thesis}"
+                )
+            lines.append(
+                "DECISIONS SAVED · PAPER research only · no wallet signing · no order transmitted."
+            )
+            self.market_status.configure(text="\n".join(lines))
+            self.app.log_queue.put(
+                f"[Pack] Qwen analyzed {len(rows)} risk-passed candidate(s); PAPER decisions saved to SQLite."
             )
 
         threading.Thread(target=worker, daemon=True).start()
