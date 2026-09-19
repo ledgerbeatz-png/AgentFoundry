@@ -245,7 +245,7 @@ class BenchmarksScreen(BaseScreen):
         body = ttk.Frame(self, style="Root.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
-        body.rowconfigure(2, weight=1)
+        body.rowconfigure(2, weight=0)
 
         controls = ttk.LabelFrame(body, text="BENCHMARK PLAN", style="Card.TLabelframe", padding=14)
         controls.grid(row=0, column=0, sticky="ew", pady=(0, 12))
@@ -299,7 +299,7 @@ class BenchmarksScreen(BaseScreen):
 
         self.result_elapsed = ttk.Label(self.result_card, text="—", style="Metric.TLabel")
         self.result_elapsed.grid(row=1, column=3, sticky="w", pady=(4, 0))
-        ttk.Label(self.result_card, text="COMPLETED", style="MetricCaption.TLabel").grid(row=2, column=3, sticky="w")
+        ttk.Label(self.result_card, text="LAST RUN", style="MetricCaption.TLabel").grid(row=2, column=3, sticky="w")
 
         self.verify_button = ttk.Button(
             self.result_card,
@@ -313,10 +313,10 @@ class BenchmarksScreen(BaseScreen):
         results = ttk.LabelFrame(body, text="RESULTS", style="Card.TLabelframe", padding=10)
         results.grid(row=2, column=0, sticky="nsew")
         results.columnconfigure(0, weight=1)
-        results.rowconfigure(0, weight=1)
+        results.rowconfigure(0, weight=0)
 
         columns = ("layers", "status", "latency", "tokens", "tps")
-        self.table = ttk.Treeview(results, columns=columns, show="headings", height=6)
+        self.table = ttk.Treeview(results, columns=columns, show="headings", height=4)
         headings = {
             "layers": "GPU layers",
             "status": "Status",
@@ -328,7 +328,7 @@ class BenchmarksScreen(BaseScreen):
         for key in columns:
             self.table.heading(key, text=headings[key])
             self.table.column(key, width=widths[key], anchor="center")
-        self.table.grid(row=0, column=0, sticky="nsew")
+        self.table.grid(row=0, column=0, sticky="ew")
         ttk.Scrollbar(results, command=self.table.yview).grid(row=0, column=1, sticky="ns")
         self.table.configure(yscrollcommand=lambda first, last: None)
 
@@ -378,7 +378,7 @@ class BenchmarksScreen(BaseScreen):
     @staticmethod
     def _format_elapsed(seconds: int | float | None) -> str:
         if seconds is None:
-            return "saved"
+            return "restored"
         seconds = max(0, int(seconds))
         minutes, remaining = divmod(seconds, 60)
         return f"{minutes}m {remaining:02d}s" if minutes else f"{remaining}s"
