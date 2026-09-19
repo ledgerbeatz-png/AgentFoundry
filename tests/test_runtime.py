@@ -24,3 +24,12 @@ def test_reference_profile_builds_expected_llama_args():
     assert "off" in args
     assert "--port" in args
     assert "8080" in args
+
+
+def test_runtime_can_force_parallel_worker_slots():
+    profile = RuntimeProfile(model_path=r"C:\\models\\qwen.gguf")
+
+    args = RuntimeController().build_llama_args(profile, parallel=2)
+
+    index = args.index("--parallel")
+    assert args[index:index + 2] == ["--parallel", "2"]
