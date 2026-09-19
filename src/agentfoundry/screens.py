@@ -248,25 +248,27 @@ class BenchmarksScreen(BaseScreen):
         ttk.Label(controls, text="GPU layers", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
         self.layers = tk.StringVar(value="12,16,20,24")
         ttk.Entry(controls, textvariable=self.layers).grid(row=0, column=1, sticky="ew", padx=(12, 8))
+        self.quick_mode = tk.BooleanVar(value=True)
+        ttk.Checkbutton(controls, text="QUICK TUNE", variable=self.quick_mode).grid(row=0, column=2, padx=(0, 8))
         ttk.Button(
             controls,
-            text="RUN BENCHMARK",
+            text="RUN TUNE",
             style="Gold.TButton",
             command=self._start,
-        ).grid(row=0, column=2)
+        ).grid(row=0, column=3)
 
         self.state_label = ttk.Label(
             controls,
             text="Ready. Each value is tested in an isolated llama.cpp process.",
             style="Muted.TLabel",
         )
-        self.state_label.grid(row=1, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        self.state_label.grid(row=1, column=0, columnspan=4, sticky="w", pady=(10, 0))
 
         self.activity_var = tk.DoubleVar(value=0)
         self.activity = ttk.Progressbar(controls, variable=self.activity_var, maximum=100, mode="determinate")
-        self.activity.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        self.activity.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(10, 0))
         self.activity_detail = ttk.Label(controls, text="Idle · waiting for benchmark.", style="Muted.TLabel")
-        self.activity_detail.grid(row=3, column=0, columnspan=3, sticky="w", pady=(5, 0))
+        self.activity_detail.grid(row=3, column=0, columnspan=4, sticky="w", pady=(5, 0))
         self._activity_step = 0
         self._activity_total = 1
 
@@ -365,7 +367,7 @@ class BenchmarksScreen(BaseScreen):
 
         def worker() -> None:
             try:
-                summary = runner.run(profile)
+                summary = runner.run(profile, quick=self.quick_mode.get())
                 self.after(0, lambda: self._finish_concurrency(summary))
             except Exception as exc:
                 self.after(0, lambda exc=exc: self._fail_concurrency(exc))
@@ -447,7 +449,7 @@ class BenchmarksScreen(BaseScreen):
         self._activity_step = 0
         self._activity_total = max(1, len(values))
         self.activity_var.set(0)
-        self.activity_detail.configure(text=f"RUNNING · Preparing {len(values)} GPU configurations…")
+        self.activity_detail.configure(text=f"RUNNING · {'Quick Tune' if self.quick_mode.get() else 'Deep Benchmark'} · preparing {len(values)} GPU configurations…")
         self.state_label.configure(text="● RUNNING · Apollo is benchmarking…")
         self.recommendation.configure(text="Testing stable configurations…")
 
@@ -461,7 +463,7 @@ class BenchmarksScreen(BaseScreen):
 
         def worker() -> None:
             try:
-                results = runner.run_many(profile, values, progress=on_result)
+                results = runner.run_many(profile, values, progress=on_result, quick=self.quick_mode.get())
                 best = select_best_result(results)
                 self.after(0, lambda: self._finish(best))
             except Exception as exc:
