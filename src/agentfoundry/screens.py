@@ -773,11 +773,29 @@ class SelfSetupScreen(BaseScreen):
             self.apollo_status,
             text="Not benchmarked yet · Run Apollo to verify this machine.",
             style="GoldStatus.TLabel",
+            justify="left",
         )
         self.apollo_result_text.pack(anchor="w")
+        apollo_actions = ttk.Frame(self.apollo_status, style="Panel.TFrame")
+        apollo_actions.pack(fill="x", pady=(12, 0))
+        self.start_optimized_button = ttk.Button(
+            apollo_actions,
+            text="START OPTIMIZED RUNTIME",
+            style="Gold.TButton",
+            state="disabled",
+            command=self._start_optimized_runtime,
+        )
+        self.start_optimized_button.pack(side="left")
+        ttk.Button(
+            apollo_actions,
+            text="OPEN APOLLO",
+            style="Secondary.TButton",
+            command=lambda: app.show_screen("benchmarks"),
+        ).pack(side="right")
         self.refresh_apollo_result()
 
     def refresh_apollo_result(self) -> None:
+        status = self.app.settings.apollo_status
         layers = self.app.apollo_gpu_layers
         workers = self.app.apollo_workers
         tps = self.app.apollo_tokens_per_second
@@ -785,13 +803,37 @@ class SelfSetupScreen(BaseScreen):
         if layers is not None:
             parts.append(f"{layers} GPU layers")
         if workers is not None:
-            parts.append(f"{workers} AI workers")
+            parts.append(f"{workers} AI worker{'s' if workers != 1 else ''}")
         if tps is not None:
             parts.append(f"{tps:.2f} tok/s")
-        if parts:
-            self.apollo_result_text.configure(text=self.app.settings.apollo_status + " · Saved measurement: " + " · ".join(parts))
+        ready = status in {"VERIFIED", "QUICK READY"} and bool(self.app.settings.apollo_profile)
+        if ready and parts:
+            prefix = "✓ VERIFIED" if status == "VERIFIED" else "⚡ QUICK READY"
+            suffix = "Production profile verified." if status == "VERIFIED" else "Provisional profile ready; Deep verification is optional."
+            self.apollo_result_text.configure(
+                text=prefix + " · " + " · ".join(parts) + "\n" + suffix + " Ready for local PAPER research packs."
+            )
+            self.start_optimized_button.configure(state="normal")
         else:
-            self.apollo_result_text.configure(text=self.app.settings.apollo_status + " · Run Apollo Auto-Tune to verify this machine.")
+            self.apollo_result_text.configure(
+                text=status + " · Run Apollo Auto-Tune before starting an optimized runtime."
+            )
+            self.start_optimized_button.configure(state="disabled")
+
+    def _start_optimized_runtime(self) -> None:
+        if self.app.settings.apollo_status not in {"VERIFIED", "QUICK READY"}:
+            messagebox.showwarning("Forge", "Apollo must produce QUICK READY or VERIFIED before optimized launch.")
+            return
+        self.app.log_queue.put(
+            f"[Forge] Starting optimized runtime · {self.app.apollo_gpu_layers} GPU layers · "
+            f"{self.app.apollo_workers or 1} AI worker(s)."
+        )
+        self.start_optimized_button.configure(text="STARTING…", state="disabled")
+        self.app.start_server()
+        self.after(1200, lambda: self.start_optimized_button.configure(
+            text="RUNTIME RUNNING" if self.app.runtime.server_running() else "START OPTIMIZED RUNTIME",
+            state="disabled" if self.app.runtime.server_running() else "normal",
+        ))
 
     def _analyze(self) -> None:
         self.info = detect_hardware()
