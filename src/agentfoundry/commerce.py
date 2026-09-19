@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+import os
 
 
 TRIAL_DAYS = 14
@@ -91,6 +92,9 @@ def feature_available(
     feature: Feature,
     now: datetime | None = None,
 ) -> bool:
+    # Explicit developer override for local source builds. Never enabled by default.
+    if os.environ.get("AGENTFOUNDRY_DEV_MODE", "").strip().lower() in {"1", "true", "yes"}:
+        return True
     plan = entitlement.effective_plan(now)
     if plan in (Plan.PRO, Plan.TRIAL):
         return feature in PRO_FEATURES
