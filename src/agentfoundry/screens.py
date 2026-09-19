@@ -983,8 +983,8 @@ class SelfSetupScreen(BaseScreen):
                 self.solana_pack_status.configure(
                     text=(
                         "✓ PAPER WORKSPACE READY · optimized local runtime online · "
-                        "deterministic risk gates active · SQLite trade memory initialized. "
-                        "Next: connect live Solana market discovery/data feeds."
+                        "deterministic risk gates active · SQLite trade memory initialized · "
+                        "live market discovery available."
                     )
                 )
                 self.solana_prepare_button.configure(text="PAPER WORKSPACE READY", state="disabled")
