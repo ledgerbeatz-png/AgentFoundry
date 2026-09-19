@@ -968,7 +968,7 @@ class SelfSetupScreen(BaseScreen):
                 )
                 self.after(0, lambda: finish(started, None))
             except Exception as exc:
-                self.after(0, lambda: finish(None, str(exc)))
+                self.after(0, lambda error=str(exc): finish(None, error))
 
         def finish(started, error) -> None:
             if error:
@@ -1078,7 +1078,7 @@ class SelfSetupScreen(BaseScreen):
                     )
                     self.after(0, lambda: finish(started, None))
                 except Exception as exc:
-                    self.after(0, lambda: finish(None, str(exc)))
+                    self.after(0, lambda error=str(exc): finish(None, error))
 
             threading.Thread(target=worker, daemon=True).start()
 
@@ -1102,7 +1102,7 @@ class SelfSetupScreen(BaseScreen):
                     )
                     self.after(0, lambda: resume(started, None))
                 except Exception as exc:
-                    self.after(0, lambda: resume(None, str(exc)))
+                    self.after(0, lambda error=str(exc): resume(None, error))
 
             def resume(started, error) -> None:
                 if error:
@@ -1144,7 +1144,7 @@ class SelfSetupScreen(BaseScreen):
                             break
                 self.after(0, lambda: finish(candidates, assessments, errors, None))
             except Exception as exc:
-                self.after(0, lambda: finish([], [], [], str(exc)))
+                self.after(0, lambda error=str(exc): finish([], [], [], error))
 
         def finish(candidates, assessments, errors, fatal_error) -> None:
             self.solana_scan_button.configure(text="SCAN + RISK CHECK", state="normal")
@@ -1256,7 +1256,7 @@ class SelfSetupScreen(BaseScreen):
                     memory.close()
                 self.after(0, lambda: finish(rows, None))
             except Exception as exc:
-                self.after(0, lambda: finish([], str(exc)))
+                self.after(0, lambda error=str(exc): finish([], error))
 
         def finish(rows, error) -> None:
             self.solana_scan_button.configure(text="SCAN + RISK CHECK", state="normal")
