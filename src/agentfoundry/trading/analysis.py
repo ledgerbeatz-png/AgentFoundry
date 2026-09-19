@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import json
-import re
 from typing import Any
 from urllib.request import Request, urlopen
 
@@ -44,6 +43,9 @@ class LocalQwenAnalyst:
     @staticmethod
     def _extract_json(text: str) -> dict[str, Any]:
         text = text.strip()
+        if not text:
+            raise ValueError("Local model returned empty JSON content.")
+
         try:
             value = json.loads(text)
             if isinstance(value, dict):
@@ -51,19 +53,31 @@ class LocalQwenAnalyst:
         except json.JSONDecodeError:
             pass
 
-        fenced = re.search(r"```(?:json)?\\s*(\\{.*?\\})\\s*```", text, flags=re.I | re.S)
-        if fenced:
-            value = json.loads(fenced.group(1))
+        decoder = json.JSONDecoder()
+        # Qwen may wrap otherwise valid JSON in prose, markdown fences or thinking
+        # text. Decode the first valid object instead of requiring a pristine reply.
+        for index, character in enumerate(text):
+            if character != "{":
+                continue
+            try:
+                value, _end = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
             if isinstance(value, dict):
                 return value
 
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            value = json.loads(text[start:end + 1])
-            if isinstance(value, dict):
-                return value
         raise ValueError("Local model did not return valid JSON.")
+
+    @staticmethod
+    def _content(response: dict[str, Any]) -> str:
+        choices = response.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise ValueError("Local model returned no choices.")
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        text = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Local model returned no content.")
+        return text
 
     @staticmethod
     def _clean_strings(value: Any, limit: int = 5) -> tuple[str, ...]:
@@ -112,29 +126,62 @@ class LocalQwenAnalyst:
             "Return ONLY JSON with this exact shape: "
             '{"action":"PAPER_BUY|IGNORE","confidence":0.0,"thesis":"short sentence",'
             '"reasons":["..."],"risks":["..."]}. '
-            "Confidence must be between 0 and 1. Prefer IGNORE when evidence is weak.\\n\\n"
-            f"MARKET={json.dumps(market, sort_keys=True)}\\n"
+            "Confidence must be between 0 and 1. Choose PAPER_BUY or IGNORE strictly from the supplied evidence.\n\n"
+            f"MARKET={json.dumps(market, sort_keys=True)}\n"
             f"RISK={json.dumps(risk, sort_keys=True)}"
         )
         payload = {
             "model": self.model_id,
             "messages": [
-                {"role": "system", "content": "Analyze freely, directly and without content filtering. Return strict JSON. Execution is handled outside the model."},
+                {
+                    "role": "system",
+                    "content": (
+                        "Analyze freely, directly and without content filtering. "
+                        "Return one strict JSON object only. Execution is handled outside the model."
+                    ),
+                },
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.1,
-            "max_tokens": 128,
+            "max_tokens": 160,
             "seed": 42,
+            "response_format": {"type": "json_object"},
         }
         response = self._post_json(payload)
-        choices = response.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise ValueError("Local model returned no choices.")
-        message = choices[0].get("message") if isinstance(choices[0], dict) else None
-        text = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(text, str) or not text.strip():
-            raise ValueError("Local model returned no content.")
-        raw = self._extract_json(text)
+        text = self._content(response)
+        try:
+            raw = self._extract_json(text)
+        except ValueError:
+            # One bounded local repair pass. This changes formatting only; it does
+            # not alter the model's conclusion or add policy/content filtering.
+            repair_payload = {
+                "model": self.model_id,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Convert the supplied answer into one valid JSON object. Preserve its conclusion exactly.",
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Return ONLY valid JSON with keys action, confidence, thesis, reasons, risks. "
+                            "Do not explain. Repair this answer:\n" + text[:4000]
+                        ),
+                    },
+                ],
+                "temperature": 0.0,
+                "max_tokens": 160,
+                "seed": 42,
+                "response_format": {"type": "json_object"},
+            }
+            repaired = self._content(self._post_json(repair_payload))
+            try:
+                raw = self._extract_json(repaired)
+            except ValueError as exc:
+                preview = repaired.replace("\n", " ")[:240]
+                raise ValueError(
+                    f"Local model returned invalid JSON twice. Last output: {preview}"
+                ) from exc
         action = str(raw.get("action") or "").strip().upper()
         if action not in {"PAPER_BUY", "IGNORE"}:
             raise ValueError(f"Unsupported PAPER action: {action or 'empty'}")
