@@ -82,3 +82,54 @@ def test_hard_risk_gate_accepts_complete_clean_evidence(monkeypatch):
 
     assert assessment.status == "PASS"
     assert assessment.decision.passed is True
+
+
+class FakeRpc:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+
+    def enrich(self, mint, creator=""):
+        self.calls.append((mint, creator))
+        return dict(self.payload)
+
+
+def test_rpc_fallback_fills_missing_holder_and_developer_evidence(monkeypatch):
+    report = clean_report()
+    report["creator"] = "DEV"
+    report.pop("topHolders")
+    rpc = FakeRpc({
+        "top10_holder_pct": 31.5,
+        "developer_holding_pct": 4.25,
+        "mint_authority_enabled": False,
+        "freeze_authority_enabled": False,
+    })
+    client = RugCheckClient(delay_seconds=0, rpc_client=rpc)
+    monkeypatch.setattr(client, "report", lambda _mint: report)
+
+    assessment = client.assess(candidate())
+
+    assert rpc.calls == [("A" * 32, "DEV")]
+    assert assessment.evidence.top10_holder_pct == 31.5
+    assert assessment.evidence.developer_holding_pct == 4.25
+    assert assessment.status == "PASS"
+    assert "solana_rpc_fallback_used" in assessment.evidence.warnings
+
+
+def test_rpc_fallback_stays_fail_closed_when_creator_is_unavailable(monkeypatch):
+    report = clean_report()
+    report["creator"] = ""
+    report.pop("topHolders")
+    rpc = FakeRpc({
+        "top10_holder_pct": 25.0,
+        "developer_holding_pct": None,
+        "mint_authority_enabled": False,
+        "freeze_authority_enabled": False,
+    })
+    client = RugCheckClient(delay_seconds=0, rpc_client=rpc)
+    monkeypatch.setattr(client, "report", lambda _mint: report)
+
+    assessment = client.assess(candidate())
+
+    assert assessment.status == "BLOCK"
+    assert "missing_developer_holding_pct" in assessment.decision.reasons
