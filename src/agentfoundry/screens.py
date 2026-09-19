@@ -25,6 +25,7 @@ from .theme import COLORS
 from .trading.analysis import LocalQwenAnalyst, analysis_record
 from .trading.market_data import DexScreenerSolanaFeed
 from .trading.memory import TradeMemory
+from .trading.paper_engine import PaperResearchEngine
 from .trading.risk_enrichment import RugCheckClient, SolanaRpcRiskClient
 
 
@@ -897,6 +898,7 @@ class SelfSetupScreen(BaseScreen):
         self.market_status.pack(anchor="w", pady=(12, 0))
         self.market_candidates = []
         self.risk_assessments = []
+        self._outcome_job = None
         self.refresh_apollo_result()
 
     def refresh_apollo_result(self) -> None:
@@ -1060,6 +1062,7 @@ class SelfSetupScreen(BaseScreen):
             self.app.log_queue.put(
                 f"[Pack] Solana Research workspace READY · {layer_note} · live market discovery enabled."
             )
+            self._ensure_outcome_tracking()
 
         if self.app.runtime.endpoint_ready(self.app.current_profile()):
             finish(self.app.current_profile(), None)
@@ -1251,7 +1254,8 @@ class SelfSetupScreen(BaseScreen):
                             risk=record["risk"],
                             analysis=record["analysis"],
                         )
-                        rows.append((assessment, analysis, None))
+                        trade_id = PaperResearchEngine(memory).open_from_analysis(assessment, analysis)
+                        rows.append((assessment, analysis, trade_id))
                 finally:
                     memory.close()
                 self.after(0, lambda: finish(rows, None))
@@ -1269,21 +1273,63 @@ class SelfSetupScreen(BaseScreen):
                 self.app.log_queue.put(f"[Pack] Qwen paper analysis failed: {error}")
                 return
 
-            for assessment, analysis, _unused in rows:
+            for assessment, analysis, trade_id in rows:
                 icon = "◆" if analysis.action == "PAPER_BUY" else "·"
+                position = " · PAPER POSITION OPEN" if trade_id else ""
                 lines.append(
                     f"{icon} {analysis.action:<9} {assessment.candidate.symbol:<10} · "
-                    f"confidence {analysis.confidence:.0%} · {analysis.thesis}"
+                    f"confidence {analysis.confidence:.0%} · {analysis.thesis}{position}"
                 )
             lines.append(
                 "DECISIONS SAVED · PAPER research only · no wallet signing · no order transmitted."
             )
             self.market_status.configure(text="\n".join(lines))
+            buys = sum(1 for _assessment, analysis, trade_id in rows if analysis.action == "PAPER_BUY" and trade_id)
             self.app.log_queue.put(
-                f"[Pack] Qwen analyzed {len(rows)} risk-passed candidate(s); PAPER decisions saved to SQLite."
+                f"[Pack] Qwen analyzed {len(rows)} risk-passed candidate(s); PAPER decisions saved to SQLite"
+                f" · {buys} simulated position(s) open."
             )
+            self._ensure_outcome_tracking()
 
         threading.Thread(target=worker, daemon=True).start()
+    def _ensure_outcome_tracking(self) -> None:
+        if self._outcome_job is None:
+            self._outcome_job = self.after(1000, self._poll_paper_outcomes)
+
+    def _poll_paper_outcomes(self) -> None:
+        self._outcome_job = None
+
+        def worker() -> None:
+            database = APP_DIR / "paper" / "solana-research.sqlite3"
+            memory = TradeMemory(database)
+            try:
+                updates = PaperResearchEngine(memory).refresh_due()
+            except Exception as exc:
+                self.after(0, lambda error=str(exc): finish([], error))
+            else:
+                self.after(0, lambda: finish(updates, None))
+            finally:
+                memory.close()
+
+        def finish(updates, error) -> None:
+            if error:
+                self.app.log_queue.put(f"[Paper] Outcome tracking warning: {error}")
+            else:
+                for update in updates:
+                    if update.get("horizon"):
+                        self.app.log_queue.put(
+                            f"[Paper] {update['symbol']} · {update['horizon']} outcome recorded · "
+                            f"price {update['price']}"
+                        )
+                    elif update.get("status") == "closed_24h":
+                        self.app.log_queue.put(
+                            f"[Paper] {update['symbol']} · 24h PAPER position closed · "
+                            f"PnL {update['realized_pnl_pct']:.2f}%"
+                        )
+            self._outcome_job = self.after(60_000, self._poll_paper_outcomes)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _analyze(self) -> None:
         self.info = detect_hardware()
         self.plan = build_self_setup_plan(self.info, self.app.model_path.get())
