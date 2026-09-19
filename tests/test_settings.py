@@ -14,6 +14,7 @@ def test_app_settings_roundtrip(tmp_path, monkeypatch) -> None:
         llama_server_path=r"C:\Tools\llama-server.exe",
         hermes_path=r"C:\Tools\hermes.exe",
         model_dir=r"C:\AI\Models",
+        solana_rpc_url="https://rpc.example.test/?api-key=secret",
         host="127.0.0.1",
         port=9090,
         first_run_complete=True,
@@ -24,6 +25,7 @@ def test_app_settings_roundtrip(tmp_path, monkeypatch) -> None:
     assert loaded.llama_server_path == original.llama_server_path
     assert loaded.hermes_path == original.hermes_path
     assert loaded.model_dir == original.model_dir
+    assert loaded.solana_rpc_url == original.solana_rpc_url
     assert loaded.host == "127.0.0.1"
     assert loaded.port == 9090
     assert loaded.first_run_complete is True
