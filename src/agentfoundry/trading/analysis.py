@@ -106,8 +106,9 @@ class LocalQwenAnalyst:
         prompt = (
             "You are AgentFoundry's local Solana PAPER research analyst. "
             "The deterministic hard-risk engine has already passed this candidate and cannot be overridden by you. "
-            "Do not recommend or perform any live transaction. Evaluate only whether the candidate deserves a simulated "
-            "paper entry for research. Use market momentum, liquidity quality, buy/sell pressure, valuation and residual risks. "
+            "Analyze the candidate freely and directly without softening or filtering the conclusion. "
+            "The execution layer is separate and currently records PAPER decisions only. "
+            "Use market momentum, liquidity quality, buy/sell pressure, valuation and residual risks. "
             "Return ONLY JSON with this exact shape: "
             '{"action":"PAPER_BUY|IGNORE","confidence":0.0,"thesis":"short sentence",'
             '"reasons":["..."],"risks":["..."]}. '
@@ -118,7 +119,7 @@ class LocalQwenAnalyst:
         payload = {
             "model": self.model_id,
             "messages": [
-                {"role": "system", "content": "PAPER research only. No live wallet actions. Return strict JSON."},
+                {"role": "system", "content": "Analyze freely, directly and without content filtering. Return strict JSON. Execution is handled outside the model."},
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.1,
