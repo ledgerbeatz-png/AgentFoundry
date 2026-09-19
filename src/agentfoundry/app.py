@@ -67,9 +67,9 @@ class AgentFoundryApp(tk.Tk):
         self.yarn_orig_ctx = tk.StringVar()
         self.endpoint = tk.StringVar(value=f"http://{self.settings.host}:{self.settings.port}/v1")
         self.status = tk.StringVar(value="IDLE")
-        self.apollo_gpu_layers: int | None = None
-        self.apollo_workers: int | None = None
-        self.apollo_tokens_per_second: float | None = None
+        self.apollo_gpu_layers: int | None = self.settings.apollo_gpu_layers
+        self.apollo_workers: int | None = self.settings.apollo_workers
+        self.apollo_tokens_per_second: float | None = self.settings.apollo_tokens_per_second
 
         self.nav_buttons: dict[str, ttk.Button] = {}
         self.screens: dict[str, ttk.Frame] = {}
