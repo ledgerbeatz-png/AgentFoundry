@@ -211,10 +211,16 @@ class BenchmarkRunner:
         profile: RuntimeProfile,
         gpu_layers_values: list[int],
         progress: Callable[[BenchmarkResult], None] | None = None,
+        quick: bool = False,
     ) -> list[BenchmarkResult]:
         results: list[BenchmarkResult] = []
         for layers in gpu_layers_values:
-            result = self.run_one(profile, layers)
+            result = self.run_one(
+                profile,
+                layers,
+                max_tokens=96 if quick else 192,
+                measured_runs=1 if quick else 3,
+            )
             results.append(result)
             if progress:
                 progress(result)
@@ -245,7 +251,12 @@ class ConcurrencyBenchmarkRunner:
         BenchmarkRunner._post_json(f"{base_url}/chat/completions", payload, self.request_timeout)
         return max(time.perf_counter() - started, 0.001)
 
-    def run(self, profile: RuntimeProfile, concurrency_values: tuple[int, ...] = (1, 2, 4)) -> ConcurrencyBenchmarkSummary:
+    def run(
+        self,
+        profile: RuntimeProfile,
+        concurrency_values: tuple[int, ...] = (1, 2, 4),
+        quick: bool = False,
+    ) -> ConcurrencyBenchmarkSummary:
         models = RuntimeController().get_models(profile)
         if not models:
             raise RuntimeError("No model is available on the running local endpoint.")
@@ -259,7 +270,8 @@ class ConcurrencyBenchmarkRunner:
 
         # Warm the live endpoint before comparing worker counts.
         self._one(profile.base_url, model_id, "Reply briefly: warmup", 24)
-        cycles = 3
+        cycles = 1 if quick else 3
+        max_tokens = 64 if quick else 128
         for workers in concurrency_values:
             self.log(f"[Apollo] Testing concurrency {workers} across {cycles} cycles…")
             walls: list[float] = []
@@ -268,7 +280,7 @@ class ConcurrencyBenchmarkRunner:
             for _ in range(cycles):
                 wall_started = time.perf_counter()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-                    futures = [pool.submit(self._one, profile.base_url, model_id, prompt, 128) for _ in range(workers)]
+                    futures = [pool.submit(self._one, profile.base_url, model_id, prompt, max_tokens) for _ in range(workers)]
                     latencies = [future.result() for future in futures]
                 wall = max(time.perf_counter() - wall_started, 0.001)
                 walls.append(wall)
