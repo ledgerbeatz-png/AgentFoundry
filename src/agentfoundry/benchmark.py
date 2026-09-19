@@ -7,6 +7,10 @@ import subprocess
 import time
 import statistics
 import concurrent.futures
+import math
+import tempfile
+from contextlib import contextmanager
+from dataclasses import replace
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -16,6 +20,7 @@ from typing import Callable
 from .self_setup import ConcurrencyResult, select_concurrency
 
 from .runtime import RuntimeController, RuntimeProfile
+from .benchmark_environment import assert_idle, memory_snapshot, wait_for_memory
 
 
 @dataclass
@@ -27,6 +32,7 @@ class BenchmarkResult:
     tokens_per_second: float = 0.0
     error: str = ""
     variability_pct: float = 0.0
+    samples: tuple[float, ...] = ()
 
     @property
     def status(self) -> str:
@@ -34,10 +40,18 @@ class BenchmarkResult:
 
 
 def select_best_result(results: list[BenchmarkResult]) -> BenchmarkResult | None:
-    stable = [result for result in results if result.stable]
+    stable = [result for result in results if result.stable and math.isfinite(result.tokens_per_second)
+              and result.tokens_per_second > 0]
     if not stable:
         return None
     return max(stable, key=lambda item: (item.tokens_per_second, -item.latency_seconds))
+
+
+def validate_completion(response: dict, expected_tokens: int) -> int:
+    tokens = (response.get("usage") or {}).get("completion_tokens")
+    if response.get("error") or not response.get("choices") or type(tokens) is not int or tokens != expected_tokens:
+        raise ValueError("Incomplete benchmark response or unsupported fixed-token workload")
+    return tokens
 
 
 class BenchmarkRunner:
@@ -54,6 +68,8 @@ class BenchmarkRunner:
         self.startup_timeout = startup_timeout
         self.request_timeout = request_timeout
         self.llama_server_path = llama_server_path
+        self.baseline = None
+        self.check_cancel = lambda: None
 
     def _find_llama_server(self) -> str:
         executable = self.llama_server_path or shutil.which("llama-server") or shutil.which("llama-server.exe")
@@ -76,6 +92,7 @@ class BenchmarkRunner:
     def _wait_ready(self, process: subprocess.Popen[str], base_url: str) -> bool:
         deadline = time.monotonic() + self.startup_timeout
         while time.monotonic() < deadline:
+            self.check_cancel()
             if process.poll() is not None:
                 return False
             try:
@@ -85,6 +102,45 @@ class BenchmarkRunner:
             except Exception:
                 time.sleep(1)
         return False
+
+    @contextmanager
+    def session(self, profile: RuntimeProfile):
+        """One owned server, captured diagnostics and confirmed cleanup on every exit."""
+        assert_idle(self.test_port)
+        if self.baseline is None:
+            self.baseline = memory_snapshot()
+        wait_for_memory(self.baseline, self.log)
+        self.check_cancel()
+        assert_idle(self.test_port)
+        test_profile = replace(profile, host="127.0.0.1", port=self.test_port)
+        command = [self._find_llama_server(), *RuntimeController().build_llama_args(test_profile)]
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as output:
+            process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT,
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            try:
+                self.log(f"Loading model · GPU {profile.gpu_layers} · context {profile.context:,}")
+                if not self._wait_ready(process, test_profile.base_url):
+                    raise RuntimeError("Benchmark server failed to become ready")
+                if process.poll() is not None:
+                    raise RuntimeError("Benchmark server exited during startup")
+                snapshot = memory_snapshot()
+                self.log(f"Runtime ready · RAM free {snapshot.available_ram_gb} GB · VRAM free {snapshot.free_vram_mb} MiB")
+                if snapshot.available_ram_gb is not None and snapshot.available_ram_gb < 1:
+                    raise RuntimeError("Runtime leaves less than 1 GB RAM available. Reduce context before retesting.")
+                yield test_profile
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=8)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=8)
+                output.seek(0, 2)
+                size = output.tell()
+                output.seek(max(0, size - 16000))
+                self.log("[Apollo server diagnostics]\n" + output.read())
+                wait_for_memory(self.baseline, self.log)
 
     def run_one(
         self,
@@ -102,109 +158,44 @@ class BenchmarkRunner:
         if not model.is_file():
             return BenchmarkResult(gpu_layers=gpu_layers, stable=False, error=f"Model not found: {model}")
 
-        executable = self._find_llama_server()
-        test_profile = RuntimeProfile(
-            model_path=profile.model_path,
-            context=profile.context,
-            gpu_layers=gpu_layers,
-            kv_cache_k=profile.kv_cache_k,
-            kv_cache_v=profile.kv_cache_v,
-            rope_scaling=profile.rope_scaling,
-            rope_scale=profile.rope_scale,
-            yarn_orig_ctx=profile.yarn_orig_ctx,
-            host="127.0.0.1",
-            port=self.test_port,
-            reasoning=profile.reasoning,
-            reasoning_budget=profile.reasoning_budget,
-        )
-        args = RuntimeController().build_llama_args(test_profile)
-        command = [executable, *args]
-
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-        process: subprocess.Popen[str] | None = None
-
         try:
-            self.log(f"[Apollo] Testing {gpu_layers} GPU layers…")
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                creationflags=creationflags,
-            )
-            if not self._wait_ready(process, test_profile.base_url):
-                error = "server failed to become ready"
-                if process.poll() is not None:
-                    error = f"server exited with code {process.returncode}"
-                self.log(f"[Apollo] {gpu_layers} layers failed: {error}")
-                return BenchmarkResult(gpu_layers=gpu_layers, stable=False, error=error)
-
-            models = RuntimeController().get_models(test_profile)
-            model_id = models[0] if models else profile.model_path
-
-            payload = {
-                "model": model_id,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens,
-                "temperature": 0,
-            }
-
-            # Warm up the model/runtime so startup effects do not decide the winner.
-            warmup_payload = dict(payload)
-            warmup_payload["max_tokens"] = 24
-            self._post_json(
-                f"{test_profile.base_url}/chat/completions",
-                warmup_payload,
-                timeout=self.request_timeout,
-            )
-
-            elapsed_runs: list[float] = []
-            token_runs: list[int] = []
-            for _ in range(max(1, measured_runs)):
-                started = time.perf_counter()
-                response = self._post_json(
-                    f"{test_profile.base_url}/chat/completions",
-                    payload,
-                    timeout=self.request_timeout,
-                )
-                elapsed_runs.append(max(time.perf_counter() - started, 0.001))
-                usage = response.get("usage") or {}
-                token_runs.append(int(usage.get("completion_tokens") or 0))
-
-            elapsed = statistics.median(elapsed_runs)
-            completion_tokens = round(statistics.median(token_runs))
-            run_tps = [
-                tokens / seconds if tokens else 0.0
-                for tokens, seconds in zip(token_runs, elapsed_runs)
-            ]
-            tokens_per_second = statistics.median(run_tps)
-            variability_pct = (
-                (max(run_tps) - min(run_tps)) / tokens_per_second * 100.0
-                if tokens_per_second > 0 and len(run_tps) > 1 else 0.0
-            )
-
-            self.log(
-                f"[Apollo] {gpu_layers} layers stable · {elapsed:.2f}s · "
-                f"{tokens_per_second:.2f} tok/s"
-            )
-            return BenchmarkResult(
-                gpu_layers=gpu_layers,
-                stable=True,
-                latency_seconds=elapsed,
-                completion_tokens=completion_tokens,
-                tokens_per_second=tokens_per_second,
-                variability_pct=variability_pct,
-            )
+            with self.session(replace(profile, gpu_layers=gpu_layers)) as test_profile:
+                models = RuntimeController().get_models(test_profile)
+                if not models:
+                    raise ValueError("Benchmark endpoint has no model")
+                payload = {
+                    "model": models[0],
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens,
+                    "temperature": 0,
+                    "seed": 42,
+                    "ignore_eos": True,
+                    "cache_prompt": False,
+                }
+                self.log(f"GPU {gpu_layers} · warming up")
+                self._post_json(f"{test_profile.base_url}/chat/completions",
+                                dict(payload, max_tokens=24), self.request_timeout)
+                elapsed_runs, token_runs, run_tps = [], [], []
+                for index in range(max(1, measured_runs)):
+                    self.check_cancel()
+                    self.log(f"GPU {gpu_layers} · Run {index + 1}/{measured_runs}")
+                    started = time.perf_counter()
+                    response = self._post_json(f"{test_profile.base_url}/chat/completions",
+                                               payload, self.request_timeout)
+                    elapsed = max(time.perf_counter() - started, 0.001)
+                    tokens = validate_completion(response, max_tokens)
+                    elapsed_runs.append(elapsed)
+                    token_runs.append(tokens)
+                    run_tps.append(tokens / elapsed)
+                    self.log(f"GPU {gpu_layers} · Run {index + 1}/{measured_runs} · {run_tps[-1]:.2f} end-to-end tok/s")
+                tps = statistics.median(run_tps)
+                variability = (max(run_tps) - min(run_tps)) / tps * 100 if len(run_tps) > 1 else 0
+                return BenchmarkResult(gpu_layers, True, statistics.median(elapsed_runs),
+                                       round(statistics.median(token_runs)), tps,
+                                       variability_pct=variability, samples=tuple(run_tps))
         except (urllib.error.URLError, TimeoutError, subprocess.SubprocessError, OSError, ValueError) as exc:
             self.log(f"[Apollo] {gpu_layers} layers failed: {exc}")
             return BenchmarkResult(gpu_layers=gpu_layers, stable=False, error=str(exc))
-        finally:
-            if process and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=8)
-                except subprocess.TimeoutExpired:
-                    process.kill()
 
     def run_many(
         self,
@@ -231,14 +222,17 @@ class BenchmarkRunner:
 class ConcurrencyBenchmarkSummary:
     results: list[ConcurrencyResult]
     recommended_concurrency: int
+    variability_pct: float = 0.0
 
 
 class ConcurrencyBenchmarkRunner:
     """Measure an already-running OpenAI-compatible local endpoint at 1/2/4 workers."""
 
-    def __init__(self, request_timeout: float = 90.0, log: Callable[[str], None] | None = None) -> None:
+    def __init__(self, request_timeout: float = 90.0, log: Callable[[str], None] | None = None,
+                 check_cancel=None) -> None:
         self.request_timeout = request_timeout
         self.log = log or (lambda _message: None)
+        self.check_cancel = check_cancel or (lambda: None)
 
     def _one(self, base_url: str, model_id: str, prompt: str, max_tokens: int) -> float:
         payload = {
@@ -246,9 +240,13 @@ class ConcurrencyBenchmarkRunner:
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
             "temperature": 0,
+            "seed": 42,
+            "ignore_eos": True,
+            "cache_prompt": False,
         }
         started = time.perf_counter()
-        BenchmarkRunner._post_json(f"{base_url}/chat/completions", payload, self.request_timeout)
+        response = BenchmarkRunner._post_json(f"{base_url}/chat/completions", payload, self.request_timeout)
+        validate_completion(response, max_tokens)
         return max(time.perf_counter() - started, 0.001)
 
     def run(
@@ -262,6 +260,7 @@ class ConcurrencyBenchmarkRunner:
             raise RuntimeError("No model is available on the running local endpoint.")
         model_id = models[0]
         results: list[ConcurrencyResult] = []
+        variability = 0.0
         prompt = (
             "Analyze this hypothetical paper-trading setup: momentum is rising, liquidity is adequate, "
             "holder concentration is moderate, and no hard-risk flags are present. Return a concise "
@@ -277,7 +276,9 @@ class ConcurrencyBenchmarkRunner:
             walls: list[float] = []
             throughputs: list[float] = []
             average_latencies: list[float] = []
-            for _ in range(cycles):
+            for cycle in range(cycles):
+                self.check_cancel()
+                self.log(f"AI workers {workers} · Cycle {cycle + 1}/{cycles}")
                 wall_started = time.perf_counter()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
                     futures = [pool.submit(self._one, profile.base_url, model_id, prompt, max_tokens) for _ in range(workers)]
@@ -293,6 +294,8 @@ class ConcurrencyBenchmarkRunner:
                 average_latency_seconds=statistics.median(average_latencies),
             )
             results.append(result)
+            variability = max(variability, (max(throughputs) - min(throughputs)) / result.throughput_rps * 100)
             self.log(f"[Apollo] {workers} workers · {result.throughput_rps:.3f} req/s · {result.average_latency_seconds:.2f}s avg")
 
-        return ConcurrencyBenchmarkSummary(results=results, recommended_concurrency=select_concurrency(results))
+        return ConcurrencyBenchmarkSummary(results=results, recommended_concurrency=select_concurrency(results),
+                                           variability_pct=variability)

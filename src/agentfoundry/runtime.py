@@ -175,6 +175,7 @@ class RuntimeController:
             process.wait(timeout=8)
         except subprocess.TimeoutExpired:
             process.kill()
+            process.wait(timeout=8)
         self.log("[AgentFoundry] llama.cpp server stopped.")
         self.server_process = None
 
