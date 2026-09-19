@@ -262,6 +262,14 @@ class BenchmarksScreen(BaseScreen):
         )
         self.state_label.grid(row=1, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
+        self.activity_var = tk.DoubleVar(value=0)
+        self.activity = ttk.Progressbar(controls, variable=self.activity_var, maximum=100, mode="determinate")
+        self.activity.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        self.activity_detail = ttk.Label(controls, text="Idle · waiting for benchmark.", style="Muted.TLabel")
+        self.activity_detail.grid(row=3, column=0, columnspan=3, sticky="w", pady=(5, 0))
+        self._activity_step = 0
+        self._activity_total = 1
+
         results = ttk.LabelFrame(body, text="RESULTS", style="Card.TLabelframe", padding=10)
         results.grid(row=1, column=0, sticky="nsew")
         results.columnconfigure(0, weight=1)
@@ -347,6 +355,8 @@ class BenchmarksScreen(BaseScreen):
             )
             return
         self.running = True
+        self.activity_var.set(0)
+        self.activity_detail.configure(text="● RUNNING · Measuring AI worker concurrency (1 / 2 / 4)…")
         for item in self.worker_table.get_children():
             self.worker_table.delete(item)
         self.worker_state.configure(text="Apollo is measuring 1 / 2 / 4 workers…")
@@ -377,6 +387,8 @@ class BenchmarksScreen(BaseScreen):
                     f"{result.average_latency_seconds:.2f}s",
                 ),
             )
+        self.activity_var.set(100)
+        self.activity_detail.configure(text=f"✓ WORKER OPTIMIZATION COMPLETE · {summary.recommended_concurrency} worker(s) selected.")
         self.app.apollo_workers = summary.recommended_concurrency
         self.app.settings.apollo_workers = summary.recommended_concurrency
         save_settings(self.app.settings)
@@ -432,7 +444,11 @@ class BenchmarksScreen(BaseScreen):
         self.apply_button.configure(state="disabled")
         for item in self.table.get_children():
             self.table.delete(item)
-        self.state_label.configure(text="Apollo is benchmarking…")
+        self._activity_step = 0
+        self._activity_total = max(1, len(values))
+        self.activity_var.set(0)
+        self.activity_detail.configure(text=f"RUNNING · Preparing {len(values)} GPU configurations…")
+        self.state_label.configure(text="● RUNNING · Apollo is benchmarking…")
         self.recommendation.configure(text="Testing stable configurations…")
 
         def log(message: str) -> None:
@@ -455,6 +471,11 @@ class BenchmarksScreen(BaseScreen):
         threading.Thread(target=worker, daemon=True).start()
 
     def _append_result(self, result: BenchmarkResult) -> None:
+        self._activity_step += 1
+        self.activity_var.set(self._activity_step / self._activity_total * 100)
+        self.activity_detail.configure(
+            text=f"RUNNING · GPU {result.gpu_layers} layers complete · {self._activity_step}/{self._activity_total}"
+        )
         self.table.insert(
             "",
             "end",
@@ -476,7 +497,9 @@ class BenchmarksScreen(BaseScreen):
             self.apply_button.configure(state="disabled")
             return
 
-        self.state_label.configure(text="Benchmark complete.")
+        self.activity_var.set(100)
+        self.activity_detail.configure(text="✓ GPU benchmark complete · recommendation ready.")
+        self.state_label.configure(text="✓ COMPLETE · Benchmark finished.")
         self.recommendation.configure(
             text=(
                 f"Fastest stable result: {best.gpu_layers} GPU layers · "
