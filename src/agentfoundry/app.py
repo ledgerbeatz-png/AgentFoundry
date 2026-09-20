@@ -27,6 +27,7 @@ from .screens import (
     RuntimeScreen,
     SettingsScreen,
 )
+from .solana_dashboard import SolanaCommandCenterScreen
 from .theme import COLORS, apply_theme
 from .wizard import FirstRunWizard
 
@@ -198,6 +199,7 @@ class AgentFoundryApp(tk.Tk):
             ("benchmarks", "◎   Apollo · Benchmarks"),
             ("hardware", "⌁   Hardware"),
             ("self_setup", "⚒   Forge · Self Setup"),
+            ("solana_command", "◉   Solana · Command Center"),
             ("downloads", "⇣   Downloads"),
             ("logs", "≡   Logs"),
             ("license", "◆   License"),
@@ -227,6 +229,7 @@ class AgentFoundryApp(tk.Tk):
             "benchmarks": BenchmarksScreen(self.content, self),
             "hardware": HardwareScreen(self.content, self),
             "self_setup": SelfSetupScreen(self.content, self),
+            "solana_command": SolanaCommandCenterScreen(self.content, self),
             "downloads": DownloadsScreen(self.content, self),
             "logs": LogsScreen(self.content, self),
             "license": LicenseScreen(self.content, self),
