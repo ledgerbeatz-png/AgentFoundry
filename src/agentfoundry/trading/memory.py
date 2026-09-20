@@ -111,6 +111,10 @@ class TradeMemory:
         )
         self.db.commit()
 
+    def research_decision_count(self) -> int:
+        row = self.db.execute("SELECT COUNT(*) AS count FROM research_decisions").fetchone()
+        return int(row["count"] if row is not None else 0)
+
     def research_decisions(self, limit: int = 100) -> list[sqlite3.Row]:
         return list(
             self.db.execute(
