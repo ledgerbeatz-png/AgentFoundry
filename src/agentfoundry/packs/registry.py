@@ -49,14 +49,14 @@ def builtin_registry() -> PackRegistry:
     registry.register(
         PackManifest(
             pack_id="creator.virtual",
-            name="Virtual Creator",
+            name="Virtual Creator Studio",
             description=(
-                "Provider-neutral virtual creator foundation with persistent audience "
-                "memory, explicit AI disclosure, and pluggable media providers."
+                "Disclosed fictional-adult character continuity, persistent audience "
+                "memory and human-approved image/video provider jobs."
             ),
             category="creator",
             requires_hermes=False,
-            requires_local_model=True,
+            requires_local_model=False,
             paper_only=False,
             capabilities=(
                 "persona",
@@ -65,6 +65,11 @@ def builtin_registry() -> PackRegistry:
                 "image-provider",
                 "voice-provider",
                 "video-provider",
+                "character-bible",
+                "content-briefs",
+                "prompt-continuity",
+                "human-approval",
+                "provider-export",
             ),
         )
     )

@@ -15,6 +15,7 @@ from .runtime import RuntimeController, RuntimeProfile
 from .settings import AppSettings, load_settings, save_settings
 from .screens import (
     BenchmarksScreen,
+    CreatorStudioScreen,
     DownloadsScreen,
     HardwareScreen,
     SelfSetupScreen,
@@ -104,6 +105,7 @@ class AgentFoundryApp(tk.Tk):
             ("models", "◇   Minerva · Models"),
             ("runtime", "◈   Vulcan · Runtime"),
             ("hermes", "✦   Hermes · Agents"),
+            ("creator", "✧   Venus · Creator"),
             ("benchmarks", "◎   Apollo · Benchmarks"),
             ("hardware", "⌁   Hardware"),
             ("self_setup", "⚒   Forge · Self Setup"),
@@ -133,6 +135,7 @@ class AgentFoundryApp(tk.Tk):
             "models": ModelsScreen(self.content, self),
             "runtime": RuntimeScreen(self.content, self),
             "hermes": HermesScreen(self.content, self),
+            "creator": CreatorStudioScreen(self.content, self),
             "benchmarks": BenchmarksScreen(self.content, self),
             "hardware": HardwareScreen(self.content, self),
             "self_setup": SelfSetupScreen(self.content, self),

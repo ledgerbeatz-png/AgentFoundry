@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import platform
 import shutil
 import subprocess
@@ -10,6 +11,13 @@ from tkinter import filedialog, messagebox, ttk
 from .benchmark import BenchmarkRunner, BenchmarkResult, ConcurrencyBenchmarkRunner, select_best_result
 from .catalog import load_model_manifests
 from .commerce import Feature, Plan
+from .creator import (
+    ContentBrief,
+    ContentKind,
+    ContentPipeline,
+    CreatorProfile,
+    builtin_providers,
+)
 from .downloads import DownloadCancelled, DownloadProgress, ResumableDownloader, filename_from_url, human_bytes
 from .hardware import detect_hardware, recommend_runtime
 from .packs import builtin_registry
@@ -225,6 +233,110 @@ class HermesScreen(BaseScreen):
 
     def refresh(self) -> None:
         self.status_label.configure(text="Hermes running" if self.app.runtime.hermes_running() else "Hermes idle")
+
+
+class CreatorStudioScreen(BaseScreen):
+    def __init__(self, master: tk.Misc, app: "AgentFoundryApp") -> None:
+        super().__init__(master, app, "Venus · Creator Studio", "Consistent fictional characters, human-approved production.")
+        self.pipeline = ContentPipeline(builtin_providers())
+
+        body = ttk.Frame(self, style="Root.TFrame")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(1, weight=1)
+
+        identity = ttk.LabelFrame(body, text="CHARACTER BIBLE", style="Card.TLabelframe", padding=12)
+        identity.grid(row=0, column=0, sticky="nsew", padx=(0, 7), pady=(0, 10))
+        identity.columnconfigure(1, weight=1)
+        self.creator_id = tk.StringVar(value="maya-v1")
+        self.stage_name = tk.StringVar(value="Maya")
+        self.age = tk.StringVar(value="24")
+        self.appearance = tk.StringVar(value="dark wavy hair, brown eyes, consistent oval face")
+        self.personality = tk.StringVar(value="warm, witty, curious")
+        self.disclosure = tk.StringVar(value="AI-generated fictional creator")
+        for row, (label, variable) in enumerate((
+            ("ID", self.creator_id), ("Stage name", self.stage_name), ("Age", self.age),
+            ("Appearance", self.appearance), ("Personality", self.personality),
+            ("Disclosure", self.disclosure),
+        )):
+            ttk.Label(identity, text=label, style="Muted.TLabel").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(identity, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=(10, 0), pady=3)
+
+        brief = ttk.LabelFrame(body, text="CONTENT BRIEF", style="Card.TLabelframe", padding=12)
+        brief.grid(row=0, column=1, sticky="nsew", padx=(7, 0), pady=(0, 10))
+        brief.columnconfigure(1, weight=1)
+        self.title = tk.StringVar(value="Evening coffee")
+        self.kind = tk.StringVar(value=ContentKind.IMAGE.value)
+        self.concept = tk.StringVar(value="candid lifestyle editorial")
+        self.setting = tk.StringVar(value="modern cafe at blue hour")
+        self.wardrobe = tk.StringVar(value="black knit dress")
+        self.mood = tk.StringVar(value="warm and playful")
+        fields = (("Title", self.title), ("Concept", self.concept), ("Setting", self.setting),
+                  ("Wardrobe", self.wardrobe), ("Mood", self.mood))
+        ttk.Label(brief, text="Type", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=3)
+        ttk.Combobox(brief, textvariable=self.kind, values=("image", "video"), state="readonly").grid(
+            row=0, column=1, sticky="ew", padx=(10, 0), pady=3
+        )
+        for row, (label, variable) in enumerate(fields, start=1):
+            ttk.Label(brief, text=label, style="Muted.TLabel").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(brief, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=(10, 0), pady=3)
+
+        output = ttk.LabelFrame(body, text="APPROVED PROVIDER JOB", style="Card.TLabelframe", padding=10)
+        output.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        output.columnconfigure(0, weight=1)
+        output.rowconfigure(1, weight=1)
+        controls = ttk.Frame(output, style="Panel.TFrame")
+        controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.provider = tk.StringVar(value="higgsfield")
+        ttk.Label(controls, text="Provider", style="Muted.TLabel").pack(side="left")
+        ttk.Combobox(
+            controls, textvariable=self.provider,
+            values=tuple(p.provider_id for p in builtin_providers().all()), state="readonly", width=18,
+        ).pack(side="left", padx=8)
+        ttk.Button(controls, text="APPROVE & PREPARE", style="Gold.TButton", command=self._prepare).pack(side="left")
+        ttk.Label(
+            controls, text="No generation or publishing occurs automatically.", style="Muted.TLabel"
+        ).pack(side="right")
+        self.preview = tk.Text(
+            output, wrap="word", state="disabled", bg=COLORS["midnight"], fg=COLORS["marble"],
+            insertbackground=COLORS["marble"], font=("Cascadia Mono", 9), relief="flat", padx=10, pady=10,
+        )
+        self.preview.grid(row=1, column=0, sticky="nsew")
+
+    def _prepare(self) -> None:
+        try:
+            profile = CreatorProfile(
+                creator_id=self.creator_id.get().strip(), stage_name=self.stage_name.get().strip(),
+                age=int(self.age.get()), fictional=True, disclosure=self.disclosure.get().strip(),
+                appearance=self.appearance.get().strip(),
+                personality=tuple(v.strip() for v in self.personality.get().split(",") if v.strip()),
+                voice="friendly and confident",
+                visual_rules=("preserve facial proportions", "preserve eye and hair color"),
+            )
+            content = ContentBrief(
+                title=self.title.get().strip(), kind=ContentKind(self.kind.get()),
+                concept=self.concept.get().strip(), setting=self.setting.get().strip(),
+                wardrobe=self.wardrobe.get().strip(), mood=self.mood.get().strip(),
+                platform="manual-review",
+            )
+            item = self.pipeline.create(profile, content)
+            item = self.pipeline.approve(item, approved_by="desktop-operator")
+            item = self.pipeline.prepare(item, self.provider.get())
+            job = item.provider_job
+            assert job is not None
+            payload = {
+                "item_id": item.item_id, "status": item.status.value,
+                "provider": job.provider_id, "kind": job.kind, "prompt": job.prompt,
+                "negative_prompt": job.negative_prompt, "metadata": job.metadata,
+            }
+            self.preview.configure(state="normal")
+            self.preview.delete("1.0", "end")
+            self.preview.insert("1.0", json.dumps(payload, indent=2, ensure_ascii=False))
+            self.preview.configure(state="disabled")
+            self.app.log_queue.put(f"[Creator Studio] Prepared {job.provider_id} job {item.item_id}.")
+        except Exception as exc:
+            messagebox.showerror("Creator Studio", str(exc))
 
 
 class BenchmarksScreen(BaseScreen):
