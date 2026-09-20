@@ -882,6 +882,12 @@ class SelfSetupScreen(BaseScreen):
             command=self._scan_solana_market,
         )
         self.solana_scan_button.pack(side="left", padx=(8, 0))
+        ttk.Button(
+            pack_actions,
+            text="OPEN COMMAND CENTER",
+            style="Secondary.TButton",
+            command=lambda: app.show_screen("solana_command"),
+        ).pack(side="left", padx=(8, 0))
         ttk.Label(
             pack_actions,
             text="No wallet signing · no live orders · deterministic risk gates",
