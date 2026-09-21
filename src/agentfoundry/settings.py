@@ -16,12 +16,20 @@ class AppSettings:
     llama_server_path: str = ""
     hermes_path: str = ""
     model_dir: str = ""
+    solana_rpc_url: str = ""
     host: str = "127.0.0.1"
     port: int = 8080
     first_run_complete: bool = False
     plan: str = "free"
     trial_started_at: str = ""
     license_token: str = ""
+    apollo_gpu_layers: int | None = None
+    apollo_workers: int | None = None
+    apollo_tokens_per_second: float | None = None
+    apollo_status: str = "RETEST REQUIRED"
+    apollo_fingerprint: str = ""
+    apollo_profile: dict | None = None
+    apollo_last_attempt: dict | None = None
 
     def normalize(self) -> "AppSettings":
         if not self.model_dir:
@@ -108,7 +116,9 @@ def load_settings() -> AppSettings:
 
 def save_settings(settings: AppSettings) -> None:
     APP_DIR.mkdir(parents=True, exist_ok=True)
-    SETTINGS_FILE.write_text(
+    temporary = SETTINGS_FILE.with_suffix(".tmp")
+    temporary.write_text(
         json.dumps(asdict(settings.normalize()), indent=2),
         encoding="utf-8",
     )
+    temporary.replace(SETTINGS_FILE)

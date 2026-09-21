@@ -66,7 +66,43 @@ def _unix_ram_gb() -> float:
         return 0.0
 
 
+def _detect_nvidia_smi_gpu() -> tuple[str, float] | None:
+    """Prefer NVIDIA's own driver telemetry; WMI AdapterRAM can truncate modern VRAM values."""
+    candidates = [
+        "nvidia-smi",
+        r"C:\\Windows\\System32\\nvidia-smi.exe",
+        r"C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe",
+    ]
+    for executable in candidates:
+        try:
+            result = subprocess.run(
+                [executable, "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                continue
+            best_name = "Unknown"
+            best_mib = 0.0
+            for line in result.stdout.splitlines():
+                name, raw_mib = [part.strip() for part in line.rsplit(",", 1)]
+                mib = float(raw_mib)
+                if mib > best_mib:
+                    best_name, best_mib = name, mib
+            if best_mib > 0:
+                return best_name, best_mib / 1024.0
+        except (OSError, ValueError, subprocess.SubprocessError):
+            continue
+    return None
+
+
 def _detect_windows_gpu() -> tuple[str, float]:
+    nvidia = _detect_nvidia_smi_gpu()
+    if nvidia is not None:
+        return nvidia
+
     command = [
         "powershell",
         "-NoProfile",

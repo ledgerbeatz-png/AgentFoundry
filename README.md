@@ -12,7 +12,7 @@
 
 AgentFoundry is a local AI trading research platform designed to configure itself around the hardware it runs on. It combines GGUF model management, llama.cpp optimization, Hermes orchestration, deterministic risk controls, multi-agent analysis, adaptive paper-trade position management and evidence-based strategy learning.
 
-AgentFoundry now also includes an early **Virtual Creator Studio** capability pack:
+AgentFoundry also includes an early **Virtual Creator Studio** capability pack:
 character continuity, structured image/video briefs, mandatory human approval and
 provider-neutral jobs for Google Flow and Higgsfield. See
 [`docs/VIRTUAL_CREATOR_STUDIO.md`](docs/VIRTUAL_CREATOR_STUDIO.md).
