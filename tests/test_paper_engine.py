@@ -2,6 +2,7 @@ from agentfoundry.trading.analysis import PaperAnalysis
 from agentfoundry.trading.market_data import MarketCandidate
 from agentfoundry.trading.memory import TradeMemory
 from agentfoundry.trading.paper_engine import PaperResearchEngine
+from agentfoundry.trading.position import ExitPolicy
 from agentfoundry.trading.risk import RiskDecision
 from agentfoundry.trading.risk_enrichment import CandidateRiskAssessment, RiskEvidence
 
@@ -49,8 +50,11 @@ def paper_buy():
 
 
 class FakeFeed:
-    def __init__(self, price):
+    def __init__(self, price, buys=20, sells=10, volume=90000):
         self.price = price
+        self.buys = buys
+        self.sells = sells
+        self.volume = volume
 
     def pairs_for_addresses(self, addresses):
         return [{
@@ -64,8 +68,8 @@ class FakeFeed:
             },
             "priceUsd": str(self.price),
             "liquidity": {"usd": 50000},
-            "volume": {"h24": 90000},
-            "txns": {"m5": {"buys": 20, "sells": 10}},
+            "volume": {"h24": self.volume},
+            "txns": {"m5": {"buys": self.buys, "sells": self.sells}},
         }]
 
     @staticmethod
@@ -80,9 +84,9 @@ class FakeFeed:
             liquidity_usd=50000,
             market_cap_usd=150000,
             fdv_usd=150000,
-            volume_24h_usd=90000,
-            buys_5m=20,
-            sells_5m=10,
+            volume_24h_usd=float(pair["volume"]["h24"]),
+            buys_5m=int(pair["txns"]["m5"]["buys"]),
+            sells_5m=int(pair["txns"]["m5"]["sells"]),
             pair_created_at=1,
             url="",
         )
@@ -124,4 +128,88 @@ def test_ignore_does_not_open_position(tmp_path):
 
     assert engine.open_from_analysis(assessment(), ignore) is None
     assert memory.open_trades_with_market() == []
+    memory.close()
+
+
+def test_stop_loss_closes_before_24h(tmp_path):
+    memory = TradeMemory(tmp_path / "paper.sqlite3")
+    opened_at = 1_700_000_000
+    feed = FakeFeed(0.0074)
+    engine = PaperResearchEngine(memory, feed=feed, clock=lambda: opened_at)
+    trade_id = engine.open_from_analysis(assessment(price=0.01), paper_buy())
+
+    updates = engine.refresh_due(now=opened_at + 60)
+
+    assert memory.open_trade_for_candidate("A" * 32) is None
+    assert memory.closed_trades()[0]["trade_id"] == trade_id
+    assert round(memory.closed_trades()[0]["realized_pnl_pct"], 1) == -26.0
+    assert updates[-1]["exit_reasons"] == ["stop_loss"]
+    memory.close()
+
+
+def test_trailing_stop_survives_multiple_refreshes(tmp_path):
+    memory = TradeMemory(tmp_path / "paper.sqlite3")
+    opened_at = 1_700_000_000
+    feed = FakeFeed(0.02, volume=100000)
+    engine = PaperResearchEngine(memory, feed=feed, clock=lambda: opened_at)
+    trade_id = engine.open_from_analysis(assessment(price=0.01), paper_buy())
+
+    engine.refresh_due(now=opened_at + 60)  # establish a +100% peak
+    feed.price = 0.0155  # 22.5% below peak, still +55% from entry
+    updates = engine.refresh_due(now=opened_at + 120)
+
+    assert memory.closed_trades()[0]["trade_id"] == trade_id
+    assert updates[-1]["exit_reasons"] == ["trailing_stop"]
+    memory.close()
+
+
+def test_trailing_stop_rebuilds_peak_from_existing_outcomes(tmp_path):
+    memory = TradeMemory(tmp_path / "paper.sqlite3")
+    opened_at = 1_700_000_000
+    feed = FakeFeed(0.0155)
+    engine = PaperResearchEngine(memory, feed=feed, clock=lambda: opened_at)
+    trade_id = engine.open_from_analysis(assessment(price=0.01), paper_buy())
+    memory.add_outcome(trade_id, "5m", opened_at + 5 * 60, 0.02)
+
+    updates = engine.refresh_due(now=opened_at + 10 * 60)
+
+    assert memory.closed_trades()[0]["trade_id"] == trade_id
+    assert updates[-1]["exit_reasons"] == ["trailing_stop"]
+    memory.close()
+
+
+def test_partial_profit_is_taken_only_once(tmp_path):
+    memory = TradeMemory(tmp_path / "paper.sqlite3")
+    opened_at = 1_700_000_000
+    feed = FakeFeed(0.016, buys=30, sells=10, volume=100000)
+    engine = PaperResearchEngine(memory, feed=feed, clock=lambda: opened_at)
+    trade_id = engine.open_from_analysis(assessment(price=0.01), paper_buy())
+
+    first = engine.refresh_due(now=opened_at + 60)
+    remaining = memory.db.execute(
+        "SELECT quantity FROM trades WHERE trade_id=?", (trade_id,)
+    ).fetchone()["quantity"]
+    second = engine.refresh_due(now=opened_at + 120)
+
+    assert first[-1]["status"] == "partial_profit"
+    assert round(remaining, 8) == 6500.0
+    assert not any(item.get("status") == "partial_profit" for item in second)
+    memory.close()
+
+
+def test_stagnation_exit_uses_configured_age(tmp_path):
+    memory = TradeMemory(tmp_path / "paper.sqlite3")
+    opened_at = 1_700_000_000
+    feed = FakeFeed(0.0101, buys=5, sells=10)
+    engine = PaperResearchEngine(
+        memory,
+        feed=feed,
+        clock=lambda: opened_at,
+        exit_policy=ExitPolicy(stagnation_minutes=45),
+    )
+    engine.open_from_analysis(assessment(price=0.01), paper_buy())
+
+    updates = engine.refresh_due(now=opened_at + 46 * 60)
+
+    assert updates[-1]["exit_reasons"] == ["stagnation", "momentum_weak"]
     memory.close()
