@@ -6,6 +6,8 @@ from agentfoundry.social import (
     Channel,
     DraftStatus,
     EngagementItem,
+    DiscoveryItem,
+    InMemoryChannelAdapter,
     ProjectBrand,
     SocialMediaManager,
     nearu_founding_1000_campaign,
@@ -105,3 +107,58 @@ def test_nearu_tiktok_draft_is_publishable_copy_not_internal_guidance() -> None:
     assert "HOOK (0–2s)" in draft.body
     assert "Kanalvorgabe" not in draft.body
     assert "NearU60311" in draft.body
+
+
+def test_mercury_end_to_end_discover_approve_publish_and_reply() -> None:
+    manager = SocialMediaManager()
+    manager.add_project(nearu())
+    adapter = InMemoryChannelAdapter(
+        Channel.X,
+        discovery=(
+            DiscoveryItem(
+                external_id="x-42",
+                author="@frankfurt_single",
+                text="Dating in Frankfurt fühlt sich leer an",
+                url="https://x.example/x-42",
+            ),
+        ),
+    )
+    manager.connect_adapter(adapter)
+
+    found = manager.discover(Channel.X, "Dating", limit=5)
+    assert len(found) == 1
+    assert manager.public_actions_performed == 0
+
+    draft = manager.create_draft(
+        campaign(), Channel.X, "trust", "Lokales Dating braucht echte Dichte"
+    )
+    with pytest.raises(ValueError, match="requires approval"):
+        manager.execute_publish(draft)
+
+    approved = manager.approve(draft, "Dennis")
+    published = manager.execute_publish(approved)
+    assert published.success
+    assert published.action == "publish"
+    assert published.external_id
+    assert manager.public_actions_performed == 1
+
+    with pytest.raises(ValueError, match="requires approval"):
+        manager.execute_reply("nearu", Channel.X, found[0].external_id, "Spannender Punkt")
+
+    replied = manager.execute_reply(
+        "nearu",
+        Channel.X,
+        found[0].external_id,
+        "Spannender Punkt – genau lokale Dichte wollen wir verbessern.",
+        approved=True,
+    )
+    assert replied.success
+    assert replied.action == "reply"
+    assert manager.public_actions_performed == 2
+
+
+def test_mercury_requires_connected_adapter() -> None:
+    manager = SocialMediaManager()
+    manager.add_project(nearu())
+    with pytest.raises(RuntimeError, match="no channel adapter"):
+        manager.discover(Channel.X, "Frankfurt")
