@@ -1,5 +1,6 @@
 """Project-aware social media management for AgentFoundry."""
 
+from .adapters import ActionResult, ChannelAdapter, DiscoveryItem, InMemoryChannelAdapter
 from .manager import CHANNEL_GUIDANCE, SocialMediaManager
 from .models import (
     ApprovalMode,
@@ -13,6 +14,10 @@ from .models import (
 from .presets import NEARU_IDEAS, nearu_founding_1000_campaign, nearu_project
 
 __all__ = [
+    "ActionResult",
+    "ChannelAdapter",
+    "DiscoveryItem",
+    "InMemoryChannelAdapter",
     "ApprovalMode",
     "Campaign",
     "CHANNEL_GUIDANCE",
