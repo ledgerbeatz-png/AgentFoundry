@@ -1332,6 +1332,22 @@ class SelfSetupScreen(BaseScreen):
                             f"[Paper] {update['symbol']} · 24h PAPER position closed · "
                             f"PnL {update['realized_pnl_pct']:.2f}%"
                         )
+                    elif update.get("status") == "partial_profit":
+                        self.app.log_queue.put(
+                            f"[Paper] {update['symbol']} · PARTIAL PROFIT · "
+                            f"sold {update['sell_fraction']:.0%} · "
+                            f"remaining quantity {update['remaining_quantity']:.8g}"
+                        )
+                    elif update.get("status") == "closed_exit_policy":
+                        reasons = ", ".join(update.get("exit_reasons") or ("exit_policy",))
+                        self.app.log_queue.put(
+                            f"[Paper] {update['symbol']} · POSITION CLOSED · {reasons} · "
+                            f"PnL {update['realized_pnl_pct']:.2f}%"
+                        )
+                    elif update.get("status") == "price_unavailable":
+                        self.app.log_queue.put(
+                            f"[Paper] {update['symbol']} · price unavailable; exit check deferred."
+                        )
             self._outcome_job = self.after(60_000, self._poll_paper_outcomes)
 
         threading.Thread(target=worker, daemon=True).start()
