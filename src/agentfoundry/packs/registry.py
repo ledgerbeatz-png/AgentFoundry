@@ -46,4 +46,54 @@ def builtin_registry() -> PackRegistry:
             ),
         )
     )
+    registry.register(
+        PackManifest(
+            pack_id="creator.virtual",
+            name="Virtual Creator Studio",
+            description=(
+                "Disclosed fictional-adult character continuity, persistent audience "
+                "memory and human-approved image/video provider jobs."
+            ),
+            category="creator",
+            requires_hermes=False,
+            requires_local_model=False,
+            paper_only=False,
+            capabilities=(
+                "persona",
+                "audience-memory",
+                "content-planning",
+                "image-provider",
+                "voice-provider",
+                "video-provider",
+                "character-bible",
+                "content-briefs",
+                "prompt-continuity",
+                "human-approval",
+                "provider-export",
+            ),
+        )
+    )
+    registry.register(
+        PackManifest(
+            pack_id="marketing.social-command",
+            name="Social Command",
+            description=(
+                "Project-aware brand presence, campaign calendars, channel-specific "
+                "drafts, approval workflows and engagement triage."
+            ),
+            category="marketing",
+            requires_hermes=False,
+            requires_local_model=False,
+            paper_only=False,
+            capabilities=(
+                "multi-project-branding",
+                "campaign-planning",
+                "content-calendar",
+                "channel-drafts",
+                "approval-workflow",
+                "publish-payloads",
+                "engagement-triage",
+            ),
+        )
+    )
     return registry
