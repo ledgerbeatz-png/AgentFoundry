@@ -12,10 +12,16 @@
 
 AgentFoundry is a local AI trading research platform designed to configure itself around the hardware it runs on. It combines GGUF model management, llama.cpp optimization, Hermes orchestration, deterministic risk controls, multi-agent analysis, adaptive paper-trade position management and evidence-based strategy learning.
 
-AgentFoundry now also includes an early **Virtual Creator Studio** capability pack:
+AgentFoundry also includes an early **Virtual Creator Studio** capability pack:
 character continuity, structured image/video briefs, mandatory human approval and
 provider-neutral jobs for Google Flow and Higgsfield. See
 [`docs/VIRTUAL_CREATOR_STUDIO.md`](docs/VIRTUAL_CREATOR_STUDIO.md).
+
+The **Mercury Social Command** pack acts as a project-aware marketing operator:
+it stores separate brand identities, audiences and goals, builds multi-channel
+campaign calendars, prepares channel-specific drafts, enforces approval modes and
+triages community responses. External publishing remains adapter-driven so each
+account can be enabled independently.
 
 The current trading stack is deliberately **paper-only**. AgentFoundry records why a simulated trade was opened, held, partially closed or exited, then measures the outcome so candidate strategies can be replayed and validated before promotion. Paper or historical results do not guarantee future performance.
 

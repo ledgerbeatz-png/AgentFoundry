@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+import os
+from pathlib import Path
 
 
 TRIAL_DAYS = 14
@@ -86,11 +88,32 @@ def start_trial(entitlement: Entitlement, now: datetime | None = None) -> Entitl
     return entitlement
 
 
+def developer_mode_active() -> bool:
+    """Unlock product gates for developers working from the AgentFoundry source tree.
+
+    Packaged/distributed builds remain entitlement-gated. Developers can also
+    force the override explicitly with AGENTFOUNDRY_DEV_MODE=1.
+    """
+    if os.environ.get("AGENTFOUNDRY_DEV_MODE", "").strip().lower() in {"1", "true", "yes"}:
+        return True
+
+    try:
+        module_path = Path(__file__).resolve()
+        for parent in module_path.parents:
+            if (parent / ".git").exists() and (parent / "pyproject.toml").exists():
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def feature_available(
     entitlement: Entitlement,
     feature: Feature,
     now: datetime | None = None,
 ) -> bool:
+    if developer_mode_active():
+        return True
     plan = entitlement.effective_plan(now)
     if plan in (Plan.PRO, Plan.TRIAL):
         return feature in PRO_FEATURES

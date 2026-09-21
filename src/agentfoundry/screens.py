@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-import json
 import platform
+import queue
+import threading
+import time
+from dataclasses import asdict
 import shutil
 import subprocess
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .benchmark import BenchmarkRunner, BenchmarkResult, ConcurrencyBenchmarkRunner, select_best_result
+from .benchmark import BenchmarkResult
+from .autotune import AutoTuneRunner
 from .catalog import load_model_manifests
 from .commerce import Feature, Plan
 from .creator import (
@@ -22,9 +26,24 @@ from .downloads import DownloadCancelled, DownloadProgress, ResumableDownloader,
 from .hardware import detect_hardware, recommend_runtime
 from .packs import builtin_registry
 from .self_setup import build_self_setup_plan
+from .social import (
+    NEARU_IDEAS,
+    ApprovalMode,
+    Campaign,
+    Channel,
+    ProjectBrand,
+    SocialMediaManager,
+    nearu_founding_1000_campaign,
+    nearu_project,
+)
 from .runtime import RuntimeProfile
-from .settings import detect_runtime_paths
+from .settings import APP_DIR, detect_runtime_paths, save_settings
 from .theme import COLORS
+from .trading.analysis import LocalQwenAnalyst, analysis_record
+from .trading.market_data import DexScreenerSolanaFeed
+from .trading.memory import TradeMemory
+from .trading.paper_engine import PaperResearchEngine
+from .trading.risk_enrichment import RugCheckClient, SolanaRpcRiskClient
 
 
 class BaseScreen(ttk.Frame):
@@ -339,6 +358,143 @@ class CreatorStudioScreen(BaseScreen):
             messagebox.showerror("Creator Studio", str(exc))
 
 
+class SocialCommandScreen(BaseScreen):
+    def __init__(self, master: tk.Misc, app: "AgentFoundryApp") -> None:
+        super().__init__(master, app, "Mercury · Social Command", "One marketing operator for every selected project.")
+        self.manager = SocialMediaManager()
+
+        body = ttk.Frame(self, style="Root.TFrame")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(1, weight=1)
+
+        brand = ttk.LabelFrame(body, text="PROJECT BRAND", style="Card.TLabelframe", padding=12)
+        brand.grid(row=0, column=0, sticky="nsew", padx=(0, 7), pady=(0, 10))
+        brand.columnconfigure(1, weight=1)
+        self.social_project_id = tk.StringVar(value="nearu")
+        self.social_name = tk.StringVar(value="NearU")
+        self.social_summary = tk.StringVar(value="Local-first dating with a real regional community")
+        self.social_audience = tk.StringVar(value="active singles")
+        self.social_objective = tk.StringVar(value="recruit the Founding 1000")
+        self.social_region = tk.StringVar(value="Frankfurt Rhein-Main")
+        self.social_tone = tk.StringVar(value="trustworthy, direct, local")
+        self.social_pillars = tk.StringVar(value="local dating, trust, Founding 1000")
+        for row, (label, variable) in enumerate((
+            ("Project ID", self.social_project_id), ("Name", self.social_name),
+            ("Summary", self.social_summary), ("Audience", self.social_audience),
+            ("Objective", self.social_objective), ("Region", self.social_region),
+            ("Tone", self.social_tone), ("Content pillars", self.social_pillars),
+        )):
+            ttk.Label(brand, text=label, style="Muted.TLabel").grid(row=row, column=0, sticky="w", pady=2)
+            ttk.Entry(brand, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=(10, 0), pady=2)
+
+        campaign = ttk.LabelFrame(body, text="CAMPAIGN & CHANNEL", style="Card.TLabelframe", padding=12)
+        campaign.grid(row=0, column=1, sticky="nsew", padx=(7, 0), pady=(0, 10))
+        campaign.columnconfigure(1, weight=1)
+        self.social_campaign = tk.StringVar(value="Founding 1000")
+        self.social_goal = tk.StringVar(value="Recruit 1,000 active regional singles")
+        self.social_cta = tk.StringVar(value="Join the Founding 1000")
+        self.social_channel = tk.StringVar(value=Channel.X.value)
+        self.social_idea = tk.StringVar(value="Warum lokale Dichte Dating besser macht")
+        self.social_approval = tk.StringVar(value=ApprovalMode.APPROVAL_REQUIRED.value)
+        rows = (("Campaign", self.social_campaign), ("Goal", self.social_goal), ("Call to action", self.social_cta))
+        for row, (label, variable) in enumerate(rows):
+            ttk.Label(campaign, text=label, style="Muted.TLabel").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(campaign, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=(10, 0), pady=3)
+        ttk.Label(campaign, text="Channel", style="Muted.TLabel").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Combobox(campaign, textvariable=self.social_channel, values=tuple(c.value for c in Channel), state="readonly").grid(row=3, column=1, sticky="ew", padx=(10, 0), pady=3)
+        ttk.Label(campaign, text="Approval", style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=3)
+        ttk.Combobox(campaign, textvariable=self.social_approval, values=tuple(m.value for m in ApprovalMode), state="readonly").grid(row=4, column=1, sticky="ew", padx=(10, 0), pady=3)
+        ttk.Label(campaign, text="Content idea", style="Muted.TLabel").grid(row=5, column=0, sticky="w", pady=3)
+        ttk.Entry(campaign, textvariable=self.social_idea).grid(row=5, column=1, sticky="ew", padx=(10, 0), pady=3)
+
+        output = ttk.LabelFrame(body, text="SOCIAL OPERATIONS PLAN", style="Card.TLabelframe", padding=10)
+        output.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        output.columnconfigure(0, weight=1)
+        output.rowconfigure(1, weight=1)
+        controls = ttk.Frame(output, style="Panel.TFrame")
+        controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Button(controls, text="BUILD PLAN & DRAFT", style="Gold.TButton", command=self._build_social_plan).pack(side="left")
+        ttk.Button(controls, text="RUN NEARU TEST", style="Secondary.TButton", command=self._run_nearu_test).pack(side="left", padx=8)
+        ttk.Label(controls, text="External publishing requires a connected channel adapter.", style="Muted.TLabel").pack(side="right")
+        self.social_preview = tk.Text(
+            output, wrap="word", state="disabled", bg=COLORS["midnight"], fg=COLORS["marble"],
+            insertbackground=COLORS["marble"], font=("Cascadia Mono", 9), relief="flat", padx=10, pady=10,
+        )
+        self.social_preview.grid(row=1, column=0, sticky="nsew")
+
+    def _build_social_plan(self) -> None:
+        try:
+            pillars = tuple(value.strip() for value in self.social_pillars.get().split(",") if value.strip())
+            project = ProjectBrand(
+                project_id=self.social_project_id.get().strip(), name=self.social_name.get().strip(),
+                summary=self.social_summary.get().strip(), audience=self.social_audience.get().strip(),
+                objective=self.social_objective.get().strip(), region=self.social_region.get().strip(),
+                tone=tuple(value.strip() for value in self.social_tone.get().split(",") if value.strip()),
+                channels=tuple(Channel), content_pillars=pillars,
+                approval_mode=ApprovalMode(self.social_approval.get()),
+            )
+            self.manager.add_project(project)
+            plan = Campaign(
+                campaign_id=self.social_campaign.get().strip().lower().replace(" ", "-"),
+                project_id=project.project_id, name=self.social_campaign.get().strip(),
+                goal=self.social_goal.get().strip(), call_to_action=self.social_cta.get().strip(),
+                start_date="2026-09-21", end_date="2026-10-21", posts_per_week=5,
+            )
+            draft = self.manager.create_draft(
+                plan, Channel(self.social_channel.get()), pillars[0], self.social_idea.get().strip()
+            )
+            calendar = self.manager.build_calendar(plan)
+            payload = {
+                "project": project.name, "objective": project.objective,
+                "approval_mode": project.approval_mode.value,
+                "calendar_preview": calendar[:7],
+                "draft": {
+                    "id": draft.draft_id, "channel": draft.channel.value, "hook": draft.hook,
+                    "body": draft.body, "call_to_action": draft.call_to_action,
+                    "hashtags": draft.hashtags, "status": draft.status.value,
+                },
+                "next_action": "Approve the draft, then connect the selected platform adapter.",
+            }
+            self.social_preview.configure(state="normal")
+            self.social_preview.delete("1.0", "end")
+            self.social_preview.insert("1.0", json.dumps(payload, indent=2, ensure_ascii=False))
+            self.social_preview.configure(state="disabled")
+            self.app.log_queue.put(f"[Social Command] Built {project.name} campaign draft for {draft.channel.value}.")
+        except Exception as exc:
+            messagebox.showerror("Social Command", str(exc))
+
+    def _run_nearu_test(self) -> None:
+        try:
+            manager = SocialMediaManager()
+            project = nearu_project()
+            campaign = nearu_founding_1000_campaign()
+            manager.add_project(project)
+            drafts = []
+            for index, entry in enumerate(manager.build_calendar(campaign)):
+                draft = manager.create_draft(
+                    campaign, Channel(entry["channel"]), entry["pillar"],
+                    NEARU_IDEAS[index % len(NEARU_IDEAS)], entry["date"],
+                )
+                drafts.append({
+                    "date": draft.scheduled_for, "channel": draft.channel.value,
+                    "pillar": draft.pillar, "body": draft.body,
+                    "hashtags": draft.hashtags, "status": draft.status.value,
+                })
+            payload = {
+                "test": "NearU · Founding 1000", "public_actions_performed": 0,
+                "approval_mode": project.approval_mode.value, "drafts": drafts,
+            }
+            self.social_preview.configure(state="normal")
+            self.social_preview.delete("1.0", "end")
+            self.social_preview.insert("1.0", json.dumps(payload, indent=2, ensure_ascii=False))
+            self.social_preview.configure(state="disabled")
+            self.app.log_queue.put("[Social Command] NearU test completed: 5 drafts, 0 public actions.")
+        except Exception as exc:
+            messagebox.showerror("NearU Social Test", str(exc))
+
+
 class BenchmarksScreen(BaseScreen):
     def __init__(self, master: tk.Misc, app: "AgentFoundryApp") -> None:
         super().__init__(
@@ -351,48 +507,90 @@ class BenchmarksScreen(BaseScreen):
         body = ttk.Frame(self, style="Root.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
-        body.rowconfigure(1, weight=1)
+        body.rowconfigure(2, weight=0)
 
         controls = ttk.LabelFrame(body, text="BENCHMARK PLAN", style="Card.TLabelframe", padding=14)
         controls.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         controls.columnconfigure(1, weight=1)
 
-        ttk.Label(controls, text="GPU layers", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        self.layers = tk.StringVar(value="12,16,20,24")
-        ttk.Entry(controls, textvariable=self.layers).grid(row=0, column=1, sticky="ew", padx=(12, 8))
-        ttk.Button(
-            controls,
-            text="RUN BENCHMARK",
-            style="Gold.TButton",
-            command=self._start,
-        ).grid(row=0, column=2)
+        ttk.Label(controls, text="FULL AUTO-TUNE", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        self.layers = tk.StringVar(value="")
+        self.advanced = ttk.Frame(controls, style="Panel.TFrame")
+        ttk.Label(self.advanced, text="GPU layer candidates (blank = automatic):", style="Muted.TLabel").pack(side="left")
+        ttk.Entry(self.advanced, textvariable=self.layers).pack(side="left", padx=8)
+        self.quick_button = ttk.Button(controls, text="⚡ QUICK TUNE", style="Gold.TButton",
+                                       command=lambda: self._start("quick"))
+        self.quick_button.grid(row=0, column=2, padx=8)
+        self.deep_button = ttk.Button(controls, text="◎ DEEP BENCHMARK", style="Secondary.TButton",
+                                      command=lambda: self._start("deep"))
+        self.deep_button.grid(row=0, column=3)
 
         self.state_label = ttk.Label(
             controls,
-            text="Ready. Each value is tested in an isolated llama.cpp process.",
+            text="Full Auto-Tune · hardware → GPU → verification → AI workers → save",
             style="Muted.TLabel",
         )
-        self.state_label.grid(row=1, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        self.state_label.grid(row=1, column=0, columnspan=4, sticky="w", pady=(10, 0))
+
+        self.activity_var = tk.DoubleVar(value=0)
+        self.activity = ttk.Progressbar(controls, variable=self.activity_var, maximum=100, mode="determinate")
+        self.activity.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        self.activity_detail = ttk.Label(controls, text="Idle · waiting for benchmark.", style="Muted.TLabel")
+        self.activity_detail.grid(row=3, column=0, columnspan=4, sticky="w", pady=(5, 0))
+        self._activity_step = 0
+        self._activity_total = 1
+
+        self.result_card = ttk.LabelFrame(body, text="APOLLO RESULT", style="Card.TLabelframe", padding=12)
+        self.result_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        for column in range(5):
+            self.result_card.columnconfigure(column, weight=1)
+
+        self.result_status = ttk.Label(self.result_card, text="WAITING", style="GoldStatus.TLabel")
+        self.result_status.grid(row=0, column=0, sticky="w")
+        self.result_layers = ttk.Label(self.result_card, text="—", style="MetricGold.TLabel")
+        self.result_layers.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(self.result_card, text="GPU LAYERS", style="MetricCaption.TLabel").grid(row=2, column=0, sticky="w")
+
+        self.result_workers = ttk.Label(self.result_card, text="—", style="Metric.TLabel")
+        self.result_workers.grid(row=1, column=1, sticky="w", pady=(4, 0))
+        ttk.Label(self.result_card, text="AI WORKERS", style="MetricCaption.TLabel").grid(row=2, column=1, sticky="w")
+
+        self.result_tps = ttk.Label(self.result_card, text="—", style="Metric.TLabel")
+        self.result_tps.grid(row=1, column=2, sticky="w", pady=(4, 0))
+        ttk.Label(self.result_card, text="TOK/S", style="MetricCaption.TLabel").grid(row=2, column=2, sticky="w")
+
+        self.result_elapsed = ttk.Label(self.result_card, text="—", style="Metric.TLabel")
+        self.result_elapsed.grid(row=1, column=3, sticky="w", pady=(4, 0))
+        ttk.Label(self.result_card, text="LAST RUN", style="MetricCaption.TLabel").grid(row=2, column=3, sticky="w")
+
+        self.verify_button = ttk.Button(
+            self.result_card,
+            text="RUN DEEP VERIFICATION",
+            style="Secondary.TButton",
+            state="disabled",
+            command=lambda: self._start("deep"),
+        )
+        self.verify_button.grid(row=1, column=4, rowspan=2, sticky="e", padx=(12, 0))
 
         results = ttk.LabelFrame(body, text="RESULTS", style="Card.TLabelframe", padding=10)
-        results.grid(row=1, column=0, sticky="nsew")
+        results.grid(row=2, column=0, sticky="nsew")
         results.columnconfigure(0, weight=1)
-        results.rowconfigure(0, weight=1)
+        results.rowconfigure(0, weight=0)
 
         columns = ("layers", "status", "latency", "tokens", "tps")
-        self.table = ttk.Treeview(results, columns=columns, show="headings", height=10)
+        self.table = ttk.Treeview(results, columns=columns, show="headings", height=4)
         headings = {
             "layers": "GPU layers",
             "status": "Status",
             "latency": "Latency",
             "tokens": "Tokens",
-            "tps": "Approx tok/s",
+            "tps": "End-to-end tok/s",
         }
         widths = {"layers": 110, "status": 110, "latency": 130, "tokens": 90, "tps": 130}
         for key in columns:
             self.table.heading(key, text=headings[key])
             self.table.column(key, width=widths[key], anchor="center")
-        self.table.grid(row=0, column=0, sticky="nsew")
+        self.table.grid(row=0, column=0, sticky="ew")
         ttk.Scrollbar(results, command=self.table.yview).grid(row=0, column=1, sticky="ns")
         self.table.configure(yscrollcommand=lambda first, last: None)
 
@@ -406,31 +604,21 @@ class BenchmarksScreen(BaseScreen):
         )
         self.recommendation.grid(row=0, column=0, sticky="w")
 
-        self.apply_button = ttk.Button(
-            footer,
-            text="APPLY BEST",
-            style="Secondary.TButton",
-            state="disabled",
-            command=self._apply_best,
-        )
-        self.apply_button.grid(row=0, column=1, sticky="e")
+        self.cancel_button = ttk.Button(footer, text="CANCEL", state="disabled", command=self._cancel)
+        self.cancel_button.grid(row=0, column=1, sticky="e")
+        self.details_button = ttk.Button(footer, text="SHOW DETAILS", command=self._toggle_details)
+        self.details_button.grid(row=0, column=2, padx=8)
+        self.details = tk.Text(results, height=6, wrap="word", state="disabled")
 
         concurrency = ttk.LabelFrame(body, text="AI WORKERS · CONCURRENCY", style="Card.TLabelframe", padding=10)
-        concurrency.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        concurrency.grid(row=3, column=0, sticky="ew", pady=(12, 0))
         concurrency.columnconfigure(0, weight=1)
         self.worker_state = ttk.Label(
             concurrency,
-            text="Start the main runtime, then measure 1 / 2 / 4 parallel local AI requests.",
+            text="Workers 1 / 2 / 4 are optimized automatically after the GPU tests.",
             style="Body.TLabel",
         )
         self.worker_state.grid(row=0, column=0, sticky="w")
-        ttk.Button(
-            concurrency,
-            text="AUTO OPTIMIZE AI WORKERS",
-            style="Gold.TButton",
-            command=self._start_concurrency,
-        ).grid(row=0, column=1, sticky="e", padx=(12, 0))
-
         worker_columns = ("workers", "wall", "throughput", "avg_latency")
         self.worker_table = ttk.Treeview(concurrency, columns=worker_columns, show="headings", height=3)
         worker_headings = {
@@ -444,167 +632,318 @@ class BenchmarksScreen(BaseScreen):
             self.worker_table.column(key, width=130, anchor="center")
         self.worker_table.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
-        self.best_result: BenchmarkResult | None = None
-        self.recommended_workers = 1
+        self.refresh_saved_result()
         self.running = False
+        self.events = queue.Queue()
+        self.cancelled = threading.Event()
 
+    @staticmethod
+    def _format_elapsed(seconds: int | float | None) -> str:
+        if seconds is None:
+            return "restored"
+        seconds = max(0, int(seconds))
+        minutes, remaining = divmod(seconds, 60)
+        return f"{minutes}m {remaining:02d}s" if minutes else f"{remaining}s"
 
-    def _start_concurrency(self) -> None:
+    def refresh_saved_result(self):
+        status = self.app.settings.apollo_status
+        layers = self.app.settings.apollo_gpu_layers
+        workers = self.app.settings.apollo_workers
+        tps = self.app.settings.apollo_tokens_per_second
+        attempt = self.app.settings.apollo_last_attempt or {}
+
+        if hasattr(self, "table"):
+            for item in self.table.get_children():
+                self.table.delete(item)
+            for item in attempt.get("gpu_results") or []:
+                self.table.insert("", "end", values=(
+                    item.get("gpu_layers", "—"),
+                    "stable" if item.get("stable") else "failed",
+                    f'{float(item.get("latency_seconds") or 0):.2f}s' if item.get("stable") else "—",
+                    item.get("completion_tokens", "—") if item.get("stable") else "—",
+                    f'{float(item.get("tokens_per_second") or 0):.2f}' if item.get("stable") else "—",
+                ))
+
+        if hasattr(self, "worker_table"):
+            for item in self.worker_table.get_children():
+                self.worker_table.delete(item)
+            worker_summary = attempt.get("workers") or {}
+            for item in worker_summary.get("results") or []:
+                self.worker_table.insert("", "end", values=(
+                    item.get("concurrency", "—"),
+                    f'{float(item.get("wall_seconds") or 0):.2f}s',
+                    f'{float(item.get("throughput_rps") or 0):.3f}',
+                    f'{float(item.get("average_latency_seconds") or 0):.2f}s',
+                ))
+            if worker_summary.get("recommended_concurrency") is not None:
+                self.worker_state.configure(
+                    text=f'Saved candidate: {worker_summary["recommended_concurrency"]} AI worker(s) · {status}'
+                )
+
+        if status in {"VERIFIED", "QUICK READY"} and layers is not None:
+            self.result_status.configure(
+                text=("✓ VERIFIED" if status == "VERIFIED" else "⚡ QUICK READY"),
+                style=("Success.TLabel" if status == "VERIFIED" else "GoldStatus.TLabel"),
+            )
+            self.result_layers.configure(text=str(layers))
+            self.result_workers.configure(text=str(workers) if workers is not None else "—")
+            self.result_tps.configure(text=f"{tps:.2f}" if tps is not None else "—")
+
+            elapsed = attempt.get("elapsed_seconds")
+            self.result_elapsed.configure(text=self._format_elapsed(elapsed) if elapsed is not None else "saved")
+            completed_at = attempt.get("completed_at")
+            when = ""
+            if completed_at:
+                try:
+                    when = time.strftime("%d.%m.%Y %H:%M", time.localtime(float(completed_at)))
+                except (TypeError, ValueError, OSError):
+                    when = ""
+            reason = attempt.get("reason") or "Saved Apollo profile restored."
+            self.recommendation.configure(
+                text=(f"Last run {when} · {reason}" if when else reason),
+                wraplength=720,
+            )
+            self.activity_detail.configure(text="Saved Apollo optimization restored.")
+            self.activity_var.set(100)
+            if status == "QUICK READY":
+                self.verify_button.configure(text="RUN DEEP VERIFICATION", state="normal")
+            else:
+                self.verify_button.configure(text="✓ VERIFIED", state="disabled")
+        else:
+            self.result_status.configure(text=status or "WAITING", style="GoldStatus.TLabel")
+            self.result_layers.configure(text="—")
+            self.result_workers.configure(text="—")
+            self.result_tps.configure(text="—")
+            self.result_elapsed.configure(text="—")
+            if not (attempt.get("gpu_results") or attempt.get("workers")):
+                self.recommendation.configure(text="No benchmark result yet.")
+            self.verify_button.configure(text="RUN DEEP VERIFICATION", state="disabled")
+
+    def _set_result_card(self, result, elapsed):
+        status = result.status
+        self.result_status.configure(
+            text=("✓ VERIFIED" if status == "VERIFIED" else "⚡ QUICK READY" if status == "QUICK READY" else status),
+            style=("Success.TLabel" if status == "VERIFIED" else "GoldStatus.TLabel"),
+        )
+        self.result_layers.configure(text=str(result.profile.get("gpu_layers", "—")))
+        workers = result.workers["recommended_concurrency"] if result.workers else None
+        self.result_workers.configure(text=str(workers) if workers is not None else "—")
+        tps = result.verification["tokens_per_second"] if result.verification else None
+        self.result_tps.configure(text=f"{tps:.2f}" if tps is not None else "—")
+        self.result_elapsed.configure(text=self._format_elapsed(elapsed))
+        if status == "QUICK READY":
+            self.verify_button.configure(text="RUN DEEP VERIFICATION", state="normal")
+        elif status == "VERIFIED":
+            self.verify_button.configure(text="✓ VERIFIED", state="disabled")
+        else:
+            self.verify_button.configure(text="RETEST REQUIRED", state="disabled")
+
+    def _apply_tuned_profile(self, profile):
+        values = (
+            (self.app.model_path, profile["model_path"]),
+            (self.app.context, profile["context"]),
+            (self.app.gpu_layers, profile["gpu_layers"]),
+            (self.app.kv_k, profile["kv_cache_k"]),
+            (self.app.kv_v, profile["kv_cache_v"]),
+            (self.app.rope_scale, profile["rope_scale"]),
+            (self.app.yarn_orig_ctx, profile["yarn_orig_ctx"]),
+        )
+        for variable, value in values:
+            variable.set(str(value))
+        self.app.save_profile()
+
+    def _toggle_details(self):
+        if self.details.winfo_ismapped():
+            self.details.grid_remove()
+            self.advanced.grid_remove()
+            self.details_button.configure(text="SHOW DETAILS")
+        else:
+            self.details.grid(row=2, column=0, columnspan=2, sticky="ew", pady=8)
+            self.advanced.grid(row=4, column=0, columnspan=4, sticky="ew", pady=8)
+            self.details_button.configure(text="HIDE DETAILS")
+
+    def _cancel(self):
+        self.cancelled.set()
+        self.activity_detail.configure(text="Cancelling · waiting for the current request and server cleanup…")
+
+    def _start(self, mode="quick"):
         if self.running:
             return
-        if not self.app.runtime.server_running():
-            messagebox.showwarning(
-                "AgentFoundry",
-                "Start the main llama.cpp runtime first. Worker optimization measures the live local endpoint.",
-            )
+        if mode not in {"quick", "deep"}:
+            messagebox.showerror("Apollo", f"Unknown tune mode: {mode}")
             return
-        self.running = True
-        for item in self.worker_table.get_children():
-            self.worker_table.delete(item)
-        self.worker_state.configure(text="Apollo is measuring 1 / 2 / 4 workers…")
-        profile = self.app.current_profile()
-        runner = ConcurrencyBenchmarkRunner(log=self.app.log_queue.put)
-
-        def worker() -> None:
-            try:
-                summary = runner.run(profile)
-                self.after(0, lambda: self._finish_concurrency(summary))
-            except Exception as exc:
-                self.after(0, lambda exc=exc: self._fail_concurrency(exc))
-
-        import threading
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _finish_concurrency(self, summary) -> None:
-        self.running = False
-        self.recommended_workers = summary.recommended_concurrency
-        for result in summary.results:
-            self.worker_table.insert(
-                "",
-                "end",
-                values=(
-                    result.concurrency,
-                    f"{result.wall_seconds:.2f}s",
-                    f"{result.throughput_rps:.3f}",
-                    f"{result.average_latency_seconds:.2f}s",
-                ),
-            )
-        self.worker_state.configure(
-            text=f"Apollo recommendation: {summary.recommended_concurrency} parallel AI worker(s)."
-        )
-        self.app.log_queue.put(
-            f"[Apollo] Recommended AI concurrency: {summary.recommended_concurrency} worker(s)."
-        )
-
-    def _fail_concurrency(self, exc: Exception) -> None:
-        self.running = False
-        self.worker_state.configure(text=f"Worker optimization failed: {exc}")
-        self.app.log_queue.put(f"[Apollo] Concurrency benchmark failed: {exc}")
-
-    def _parse_layers(self) -> list[int]:
-        values: list[int] = []
-        for raw in self.layers.get().split(","):
-            raw = raw.strip()
-            if not raw:
-                continue
-            value = int(raw)
-            if value < 0 or value > 200:
-                raise ValueError("GPU layer values must be between 0 and 200.")
-            if value not in values:
-                values.append(value)
-        if not values:
-            raise ValueError("Enter at least one GPU layer value.")
-        return values
-
-    def _start(self) -> None:
-        if self.running:
-            return
-        if self.app.runtime.server_running():
-            messagebox.showwarning(
-                "AgentFoundry",
-                "Stop the main llama.cpp runtime before benchmarking so VRAM measurements are not distorted.",
-            )
-            return
-
+        quick = mode == "quick"
         try:
-            values = self._parse_layers()
             profile = self.app.current_profile()
+            candidates = [int(raw.strip()) for raw in self.layers.get().split(",") if raw.strip()] or None
+            if candidates and any(not 0 <= value <= 200 for value in candidates):
+                raise ValueError("GPU layers must be between 0 and 200.")
         except Exception as exc:
-            messagebox.showerror("AgentFoundry", str(exc))
+            messagebox.showerror("Apollo", str(exc))
             return
+        self.running = self.app.tuning_active = True
+        self.cancelled.clear()
+        self.started = time.monotonic()
+        self.source_profile = asdict(profile)
+        self.source_executable = self.app.settings.llama_server_path
+        self.state_label.configure(text="● RUNNING · " + ("QUICK TUNE" if quick else "DEEP BENCHMARK"))
+        self.activity_detail.configure(text=("QUICK MODE" if quick else "DEEP MODE") + " · Hardware preflight…")
+        self.activity_var.set(0)
+        self._activity_step = 0
+        self._activity_total = len(set(candidates)) if candidates else (3 if quick else 4)
+        self.quick_button.configure(state="disabled")
+        self.deep_button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
+        self.recommendation.configure(text="Checking hardware, model and available memory…")
+        self.result_status.configure(text="● RUNNING", style="GoldStatus.TLabel")
+        self.result_layers.configure(text="—")
+        self.result_workers.configure(text="—")
+        self.result_tps.configure(text="—")
+        self.result_elapsed.configure(text="—")
+        self.verify_button.configure(state="disabled")
+        self.worker_state.configure(text="Waiting for GPU selection before AI worker optimization.")
+        self.details.configure(state="normal")
+        self.details.delete("1.0", "end")
+        self.details.insert("end", f"APOLLO MODE = {mode.upper()}\n")
+        self.details.configure(state="disabled")
+        for table in (self.table, self.worker_table):
+            for item in table.get_children():
+                table.delete(item)
+        previous = {"fingerprint": self.app.settings.apollo_fingerprint,
+                    "gpu_layers": self.app.settings.apollo_gpu_layers,
+                    "tokens_per_second": self.app.settings.apollo_tokens_per_second or 0}
 
-        self.running = True
-        self.best_result = None
-        self.apply_button.configure(state="disabled")
-        for item in self.table.get_children():
-            self.table.delete(item)
-        self.state_label.configure(text="Apollo is benchmarking…")
-        self.recommendation.configure(text="Testing stable configurations…")
-
-        def log(message: str) -> None:
+        def log(message):
             self.app.log_queue.put(message)
+            self.events.put(("log", message))
 
-        runner = BenchmarkRunner(log=log, llama_server_path=self.app.settings.llama_server_path)
-
-        def on_result(result: BenchmarkResult) -> None:
-            self.after(0, lambda result=result: self._append_result(result))
-
-        def worker() -> None:
+        def worker():
             try:
-                results = runner.run_many(profile, values, progress=on_result)
-                best = select_best_result(results)
-                self.after(0, lambda: self._finish(best))
+                runner = AutoTuneRunner(self.source_executable, log, self.cancelled)
+                result = runner.run(
+                    profile,
+                    quick=quick,
+                    candidates=candidates,
+                    previous=previous,
+                    progress=lambda item: self.events.put(("gpu", item)),
+                )
+                self.events.put(("done", result))
             except Exception as exc:
-                self.after(0, lambda exc=exc: self._fail(exc))
+                self.events.put(("error", str(exc)))
 
-        import threading
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=worker, daemon=False).start()
+        self.after(100, self._poll_tune)
 
-    def _append_result(self, result: BenchmarkResult) -> None:
-        self.table.insert(
-            "",
-            "end",
-            values=(
-                result.gpu_layers,
-                result.status,
-                f"{result.latency_seconds:.2f}s" if result.stable else "—",
-                result.completion_tokens if result.stable else "—",
-                f"{result.tokens_per_second:.2f}" if result.stable else "—",
-            ),
-        )
+    def _poll_tune(self):
+        try:
+            while True:
+                kind, value = self.events.get_nowait()
+                if kind == "log":
+                    self.details.configure(state="normal")
+                    self.details.insert("end", value + "\n")
+                    self.details.see("end")
+                    self.details.configure(state="disabled")
+                    if not value.startswith("[Apollo server diagnostics]"):
+                        self.activity_detail.configure(text=value)
+                    if value.startswith("Verify configuration"):
+                        self.activity_var.set(65)
+                    elif value.startswith("AI worker"):
+                        self.activity_var.set(80)
+                elif kind == "gpu":
+                    self._activity_step += 1
+                    self.activity_var.set(min(60, 60 * self._activity_step / self._activity_total))
+                    self.table.insert("", "end", values=(value.gpu_layers, value.status,
+                                      f"{value.latency_seconds:.2f}s", value.completion_tokens,
+                                      f"{value.tokens_per_second:.2f}"))
+                elif kind == "done":
+                    self._complete_tune(value)
+                elif kind == "error":
+                    self._tune_failed(value)
+        except queue.Empty:
+            pass
+        if self.running:
+            self.state_label.configure(text=f"● RUNNING · Elapsed {int(time.monotonic() - self.started)}s")
+            self.after(200, self._poll_tune)
 
-    def _finish(self, best: BenchmarkResult | None) -> None:
-        self.running = False
-        self.best_result = best
-        if best is None:
-            self.state_label.configure(text="Benchmark finished: no stable configuration found.")
-            self.recommendation.configure(text="No stable result. Keep the current profile and inspect the logs.")
-            self.apply_button.configure(state="disabled")
-            return
+    def _end_tune(self):
+        self.running = self.app.tuning_active = False
+        self.quick_button.configure(state="normal")
+        self.deep_button.configure(state="normal")
+        self.cancel_button.configure(state="disabled")
 
-        self.state_label.configure(text="Benchmark complete.")
-        self.recommendation.configure(
-            text=(
-                f"Fastest stable result: {best.gpu_layers} GPU layers · "
-                f"{best.latency_seconds:.2f}s · {best.tokens_per_second:.2f} approximate tok/s"
-            )
-        )
-        self.apply_button.configure(state="normal")
+    def _tune_failed(self, message):
+        self._end_tune()
+        self.state_label.configure(text="RETEST REQUIRED · Auto-Tune did not complete")
+        self.recommendation.configure(text=message, wraplength=720)
+        self.activity_detail.configure(text="Current profile preserved. See details for diagnostics.")
+        self.result_status.configure(text="RETEST REQUIRED", style="GoldStatus.TLabel")
+        self.result_elapsed.configure(text=self._format_elapsed(time.monotonic() - self.started))
+        self.verify_button.configure(text="RETEST REQUIRED", state="disabled")
+        self.app.settings.apollo_status = "RETEST REQUIRED"
+        self.app._apollo_saved_status = "RETEST REQUIRED"
+        self.app.settings.apollo_last_attempt = {"status": "RETEST REQUIRED", "reason": message}
+        try:
+            save_settings(self.app.settings)
+        except OSError as exc:
+            self.app.log_queue.put(f"[Apollo] Could not save failure status: {exc}")
+        self._refresh_forge()
 
-    def _fail(self, exc: Exception) -> None:
-        self.running = False
-        self.state_label.configure(text="Benchmark failed.")
-        self.recommendation.configure(text=str(exc))
-        self.apply_button.configure(state="disabled")
-        self.app.log_queue.put(f"[Apollo] Benchmark failed: {exc}")
+    def _complete_tune(self, result):
+        try:
+            if self.cancelled.is_set():
+                raise RuntimeError("Auto-Tune cancelled. Current profile preserved.")
+            if (asdict(self.app.current_profile()) != self.source_profile
+                    or self.app.settings.llama_server_path != self.source_executable):
+                raise RuntimeError("Runtime settings changed while tuning. Retest required.")
+            settings = self.app.settings
+            # One atomic settings write contains evidence, workers and the full selected profile.
+            from dataclasses import replace
+            attempt = asdict(result)
+            attempt["elapsed_seconds"] = int(time.monotonic() - self.started)
+            attempt["completed_at"] = time.time()
+            updated = replace(settings, apollo_last_attempt=attempt, apollo_status=result.status)
+            if result.status in {"VERIFIED", "QUICK READY"}:
+                updated.apollo_profile = result.profile
+                updated.apollo_fingerprint = result.fingerprint
+                updated.apollo_gpu_layers = result.profile["gpu_layers"]
+                updated.apollo_workers = result.workers["recommended_concurrency"]
+                updated.apollo_tokens_per_second = result.verification["tokens_per_second"]
+            save_settings(updated)
+            self.app.settings = updated
+            self.app._apollo_saved_status = result.status
+            if result.status in {"VERIFIED", "QUICK READY"}:
+                self._apply_tuned_profile(result.profile)
+                self.app.apollo_gpu_layers = updated.apollo_gpu_layers
+                self.app.apollo_workers = updated.apollo_workers
+                self.app.apollo_tokens_per_second = updated.apollo_tokens_per_second
+                updated.apollo_status = result.status
+                self.app._apollo_saved_status = result.status
+            if result.workers:
+                for item in result.workers["results"]:
+                    self.worker_table.insert("", "end", values=(item["concurrency"],
+                        f'{item["wall_seconds"]:.2f}s', f'{item["throughput_rps"]:.3f}',
+                        f'{item["average_latency_seconds"]:.2f}s'))
+                self.worker_state.configure(text=f'Candidate: {result.workers["recommended_concurrency"]} AI worker(s) · {result.status}')
+            self._end_tune()
+            self.activity_var.set(100)
+            self.state_label.configure(text=f"{result.status} · Elapsed {int(time.monotonic() - self.started)}s")
+            self.recommendation.configure(text=result.reason, wraplength=720)
+            self._set_result_card(result, time.monotonic() - self.started)
+            self.activity_detail.configure(text=(
+                "✓ VERIFIED · Profile saved and applied."
+                if result.status == "VERIFIED"
+                else "⚡ QUICK READY · Provisional profile saved and applied · Deep Benchmark optional."
+                if result.status == "QUICK READY"
+                else "Measurement saved · Current profile preserved · Retest recommended."
+            ))
+            self._refresh_forge()
+        except Exception as exc:
+            self._tune_failed(str(exc))
 
-    def _apply_best(self) -> None:
-        if self.best_result is None:
-            return
-        self.app.gpu_layers.set(str(self.best_result.gpu_layers))
-        self.app.log_queue.put(
-            f"[Apollo] Applied benchmark recommendation: {self.best_result.gpu_layers} GPU layers."
-        )
+    def _refresh_forge(self):
+        forge = self.app.screens.get("self_setup")
+        if forge is not None:
+            forge.refresh_apollo_result()
 
 
 class HardwareScreen(BaseScreen):
@@ -742,6 +1081,535 @@ class SelfSetupScreen(BaseScreen):
         self.info = None
         self.plan = None
 
+        self.apollo_status = ttk.LabelFrame(body, text="APOLLO · OPTIMIZATION STATUS", style="Card.TLabelframe", padding=14)
+        self.apollo_status.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        self.apollo_result_text = ttk.Label(
+            self.apollo_status,
+            text="Not benchmarked yet · Run Apollo to verify this machine.",
+            style="GoldStatus.TLabel",
+            justify="left",
+        )
+        self.apollo_result_text.pack(anchor="w")
+        apollo_actions = ttk.Frame(self.apollo_status, style="Panel.TFrame")
+        apollo_actions.pack(fill="x", pady=(12, 0))
+        self.start_optimized_button = ttk.Button(
+            apollo_actions,
+            text="START OPTIMIZED RUNTIME",
+            style="Gold.TButton",
+            state="disabled",
+            command=self._start_optimized_runtime,
+        )
+        self.start_optimized_button.pack(side="left")
+        ttk.Button(
+            apollo_actions,
+            text="OPEN APOLLO",
+            style="Secondary.TButton",
+            command=lambda: app.show_screen("benchmarks"),
+        ).pack(side="right")
+
+        self.solana_card = ttk.LabelFrame(
+            body,
+            text="4 · SOLANA RESEARCH PACK · PAPER ONLY",
+            style="Card.TLabelframe",
+            padding=14,
+        )
+        self.solana_card.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        self.solana_pack_status = ttk.Label(
+            self.solana_card,
+            text="Waiting for an Apollo-ready local runtime.",
+            style="Body.TLabel",
+            justify="left",
+            wraplength=900,
+        )
+        self.solana_pack_status.pack(anchor="w")
+        pack_actions = ttk.Frame(self.solana_card, style="Panel.TFrame")
+        pack_actions.pack(fill="x", pady=(12, 0))
+        self.solana_prepare_button = ttk.Button(
+            pack_actions,
+            text="PREPARE SOLANA RESEARCH",
+            style="Gold.TButton",
+            state="disabled",
+            command=self._prepare_solana_research,
+        )
+        self.solana_prepare_button.pack(side="left")
+        self.solana_scan_button = ttk.Button(
+            pack_actions,
+            text="SCAN + RISK CHECK",
+            style="Secondary.TButton",
+            state="disabled",
+            command=self._scan_solana_market,
+        )
+        self.solana_scan_button.pack(side="left", padx=(8, 0))
+        ttk.Button(
+            pack_actions,
+            text="OPEN COMMAND CENTER",
+            style="Secondary.TButton",
+            command=lambda: app.show_screen("solana_command"),
+        ).pack(side="left", padx=(8, 0))
+        ttk.Label(
+            pack_actions,
+            text="No wallet signing · no live orders · deterministic risk gates",
+            style="Muted.TLabel",
+        ).pack(side="right")
+
+        self.market_status = ttk.Label(
+            self.solana_card,
+            text="Market discovery idle.",
+            style="Muted.TLabel",
+            justify="left",
+            wraplength=1000,
+        )
+        self.market_status.pack(anchor="w", pady=(12, 0))
+        self.market_candidates = []
+        self.risk_assessments = []
+        self._outcome_job = None
+        self.refresh_apollo_result()
+
+    def refresh_apollo_result(self) -> None:
+        status = self.app.settings.apollo_status
+        layers = self.app.apollo_gpu_layers
+        workers = self.app.apollo_workers
+        tps = self.app.apollo_tokens_per_second
+        parts = []
+        if layers is not None:
+            parts.append(f"{layers} GPU layers")
+        if workers is not None:
+            parts.append(f"{workers} AI worker{'s' if workers != 1 else ''}")
+        if tps is not None:
+            parts.append(f"{tps:.2f} tok/s")
+        ready = status in {"VERIFIED", "QUICK READY"} and bool(self.app.settings.apollo_profile)
+        if ready and parts:
+            prefix = "✓ VERIFIED" if status == "VERIFIED" else "⚡ QUICK READY"
+            suffix = "Production profile verified." if status == "VERIFIED" else "Provisional profile ready; Deep verification is optional."
+            self.apollo_result_text.configure(
+                text=prefix + " · " + " · ".join(parts) + "\n" + suffix + " Ready for local PAPER research packs."
+            )
+            self.start_optimized_button.configure(state="normal")
+            self.solana_prepare_button.configure(state="normal")
+            if self.app.runtime.endpoint_ready(self.app.current_profile()):
+                self.solana_scan_button.configure(state="normal")
+                self.start_optimized_button.configure(text="RUNTIME RUNNING", state="disabled")
+            self.solana_pack_status.configure(
+                text="READY TO PREPARE · Apollo profile available · local model selected · PAPER ONLY."
+            )
+        else:
+            self.apollo_result_text.configure(
+                text=status + " · Run Apollo Auto-Tune before starting an optimized runtime."
+            )
+            self.start_optimized_button.configure(state="disabled")
+            self.solana_prepare_button.configure(state="disabled")
+            self.solana_scan_button.configure(state="disabled")
+            self.solana_pack_status.configure(
+                text="Waiting for QUICK READY or VERIFIED Apollo profile before preparing Solana Research."
+            )
+
+    def _start_optimized_runtime(self) -> None:
+        if self.app.settings.apollo_status not in {"VERIFIED", "QUICK READY"}:
+            messagebox.showwarning("Forge", "Apollo must produce QUICK READY or VERIFIED before optimized launch.")
+            return
+        if self.app.runtime.endpoint_ready(self.app.current_profile()):
+            self.start_optimized_button.configure(text="RUNTIME RUNNING", state="disabled")
+            return
+
+        profile = self.app.current_profile()
+        parallel = self.app.apollo_workers or 1
+        self.app.log_queue.put(
+            f"[Forge] Starting optimized runtime · target {profile.gpu_layers} GPU layers · "
+            f"{parallel} AI worker(s)."
+        )
+        self.start_optimized_button.configure(text="STARTING…", state="disabled")
+        self.apollo_result_text.configure(
+            text="Starting optimized runtime · Apollo target "
+            f"{profile.gpu_layers} GPU layers · automatic VRAM recovery enabled."
+        )
+
+        def worker() -> None:
+            try:
+                started = self.app.runtime.start_server_with_gpu_fallback(
+                    profile,
+                    parallel=parallel,
+                    step=4,
+                    max_fallbacks=3,
+                    ready_timeout=45,
+                )
+                self.after(0, lambda: finish(started, None))
+            except Exception as exc:
+                self.after(0, lambda error=str(exc): finish(None, error))
+
+        def finish(started, error) -> None:
+            if error:
+                self.start_optimized_button.configure(text="START OPTIMIZED RUNTIME", state="normal")
+                self.apollo_result_text.configure(
+                    text=f"Runtime start failed · {error}"
+                )
+                messagebox.showerror("Forge", error)
+                return
+
+            actual_layers = started.gpu_layers
+            target_layers = profile.gpu_layers
+            if actual_layers == target_layers:
+                text = f"RUNTIME RUNNING · {actual_layers} GPU LAYERS"
+                note = "Optimized runtime online at the Apollo target."
+            else:
+                text = f"RUNTIME RUNNING · {actual_layers} GPU LAYERS"
+                note = (
+                    f"Runtime adapted to current VRAM pressure: {actual_layers} GPU layers "
+                    f"instead of Apollo target {target_layers}. Retune later only if you want a new target."
+                )
+            self.start_optimized_button.configure(text=text, state="disabled")
+            self.apollo_result_text.configure(text=note)
+            self.app.endpoint.set(started.base_url)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _prepare_solana_research(self) -> None:
+        try:
+            pack = builtin_registry().get("trading.solana-research")
+        except KeyError:
+            messagebox.showerror("Forge", "Solana Research pack is not registered.")
+            return
+        if not pack.paper_only:
+            messagebox.showerror("Forge", "Safety boundary mismatch: Solana Research must remain PAPER ONLY.")
+            return
+        if self.app.settings.apollo_status not in {"VERIFIED", "QUICK READY"}:
+            messagebox.showwarning("Forge", "Run Apollo Quick Tune or Deep Verification first.")
+            return
+        model = Path(self.app.model_path.get()).expanduser()
+        if not model.is_file():
+            messagebox.showwarning("Forge", "Select a valid local GGUF model first.")
+            return
+
+        database = APP_DIR / "paper" / "solana-research.sqlite3"
+        memory = TradeMemory(database)
+        memory.close()
+        self.app.log_queue.put(f"[Pack] Solana Research paper memory ready: {database}")
+        self.app.log_queue.put("[Pack] Solana Research safety: PAPER ONLY · wallet signing disabled · live orders disabled.")
+
+        self.solana_prepare_button.configure(text="PREPARING…", state="disabled")
+        self.solana_scan_button.configure(state="disabled")
+        self.solana_pack_status.configure(
+            text="Preparing local paper-research workspace and optimized runtime…"
+        )
+
+        def finish(started_profile=None, error=None) -> None:
+            if error:
+                self.solana_pack_status.configure(
+                    text=f"Runtime start failed · {error}"
+                )
+                self.solana_prepare_button.configure(text="PREPARE SOLANA RESEARCH", state="normal")
+                return
+            check_profile = started_profile if started_profile is not None else self.app.current_profile()
+            if not self.app.runtime.endpoint_ready(check_profile):
+                self.solana_pack_status.configure(
+                    text="Runtime endpoint is not reachable. AgentFoundry can retry automatically."
+                )
+                self.solana_prepare_button.configure(text="PREPARE SOLANA RESEARCH", state="normal")
+                return
+
+            actual_layers = started_profile.gpu_layers if started_profile is not None else self.app.current_profile().gpu_layers
+            target_layers = self.app.current_profile().gpu_layers
+            layer_note = (
+                f"runtime {actual_layers} GPU layers"
+                if actual_layers == target_layers
+                else f"runtime adapted to {actual_layers} GPU layers (Apollo target {target_layers})"
+            )
+            self.solana_pack_status.configure(
+                text=(
+                    "✓ PAPER WORKSPACE READY · "
+                    + layer_note
+                    + " · deterministic risk gates active · SQLite trade memory initialized · "
+                    "live market discovery available."
+                )
+            )
+            self.solana_prepare_button.configure(text="PAPER WORKSPACE READY", state="disabled")
+            self.solana_scan_button.configure(state="normal")
+            self.app.log_queue.put(
+                f"[Pack] Solana Research workspace READY · {layer_note} · live market discovery enabled."
+            )
+            self._ensure_outcome_tracking()
+
+        if self.app.runtime.endpoint_ready(self.app.current_profile()):
+            finish(self.app.current_profile(), None)
+        else:
+            profile = self.app.current_profile()
+            parallel = self.app.apollo_workers or 1
+
+            def worker() -> None:
+                try:
+                    started = self.app.runtime.start_server_with_gpu_fallback(
+                        profile,
+                        parallel=parallel,
+                        step=4,
+                        max_fallbacks=3,
+                        ready_timeout=45,
+                    )
+                    self.after(0, lambda: finish(started, None))
+                except Exception as exc:
+                    self.after(0, lambda error=str(exc): finish(None, error))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+    def _scan_solana_market(self) -> None:
+        profile = self.app.current_profile()
+        if not self.app.runtime.endpoint_ready(profile):
+            self.solana_scan_button.configure(text="STARTING RUNTIME…", state="disabled")
+            self.market_status.configure(
+                text="Runtime endpoint is offline · AgentFoundry is restarting it automatically before the scan…"
+            )
+            parallel = self.app.apollo_workers or 1
+
+            def start_worker() -> None:
+                try:
+                    started = self.app.runtime.start_server_with_gpu_fallback(
+                        profile,
+                        parallel=parallel,
+                        step=4,
+                        max_fallbacks=3,
+                        ready_timeout=45,
+                    )
+                    self.after(0, lambda: resume(started, None))
+                except Exception as exc:
+                    self.after(0, lambda error=str(exc): resume(None, error))
+
+            def resume(started, error) -> None:
+                if error:
+                    self.solana_scan_button.configure(text="SCAN + RISK CHECK", state="normal")
+                    self.market_status.configure(text=f"Runtime restart failed · {error}")
+                    return
+                self.app.endpoint.set(started.base_url)
+                self.solana_pack_status.configure(
+                    text=f"✓ PAPER WORKSPACE READY · runtime {started.gpu_layers} GPU layers · "
+                         "deterministic risk gates active · live market discovery available."
+                )
+                self.after(100, self._scan_solana_market)
+
+            threading.Thread(target=start_worker, daemon=True).start()
+            return
+
+        self.solana_scan_button.configure(text="SCANNING + RISK…", state="disabled")
+        self.market_status.configure(
+            text="Discovering live Solana candidates, then applying read-only RugCheck enrichment and hard risk gates…"
+        )
+
+        def worker() -> None:
+            try:
+                candidates = DexScreenerSolanaFeed().discover_latest(limit=12)
+                rpc = SolanaRpcRiskClient(
+                    rpc_url=self.app.settings.solana_rpc_url or None,
+                    timeout=15.0,
+                )
+                client = RugCheckClient(delay_seconds=0.35, rpc_client=rpc)
+                assessments = []
+                errors = []
+                for candidate in candidates[:5]:
+                    try:
+                        assessments.append(client.assess(candidate))
+                    except Exception as exc:
+                        message = str(exc)
+                        errors.append((candidate.symbol, message))
+                        if ("HTTP 429" in message or "Too Many Requests" in message) and not self.app.settings.solana_rpc_url:
+                            break
+                self.after(0, lambda: finish(candidates, assessments, errors, None))
+            except Exception as exc:
+                self.after(0, lambda error=str(exc): finish([], [], [], error))
+
+        def finish(candidates, assessments, errors, fatal_error) -> None:
+            self.solana_scan_button.configure(text="SCAN + RISK CHECK", state="normal")
+            if fatal_error:
+                self.market_status.configure(text=f"Market scan failed: {fatal_error}")
+                self.app.log_queue.put(f"[Pack] Solana market scan failed: {fatal_error}")
+                return
+
+            self.market_candidates = candidates
+            self.risk_assessments = assessments
+            if not candidates:
+                self.market_status.configure(text="No current Solana candidates returned by the discovery feed.")
+                return
+
+            lines = [
+                "LIVE DISCOVERY + HARD RISK GATES · PAPER ONLY",
+            ]
+            for assessment in assessments:
+                candidate = assessment.candidate
+                icon = "✓" if assessment.status == "PASS" else "✕"
+                reasons = ", ".join(assessment.decision.reasons) if assessment.decision.reasons else "hard gates passed"
+                rpc_note = next(
+                    (warning for warning in reversed(assessment.evidence.warnings)
+                     if warning.startswith("solana_rpc_fallback_")),
+                    "",
+                )
+                top10 = (
+                    f"{assessment.evidence.top10_holder_pct:.1f}%"
+                    if assessment.evidence.top10_holder_pct is not None else "n/a"
+                )
+                developer = (
+                    f"{assessment.evidence.developer_holding_pct:.1f}%"
+                    if assessment.evidence.developer_holding_pct is not None else "n/a"
+                )
+                line = (
+                    f"{icon} {assessment.status:<5} {candidate.symbol:<10} · liq $"
+                    + format(candidate.liquidity_usd, ",.0f")
+                    + f" · top10 {top10} · dev {developer} · {reasons}"
+                )
+                if rpc_note and ("missing_" in reasons or assessment.status == "PASS"):
+                    line += " · " + rpc_note
+                lines.append(line)
+
+            public_rate_limited = (
+                not self.app.settings.solana_rpc_url
+                and any("429" in error or "Too Many Requests" in error for _symbol, error in errors)
+            )
+            if public_rate_limited:
+                lines.append(
+                    "! RPC PROVIDER REQUIRED · public Solana RPC is rate-limiting holder lookups. "
+                    "Open Settings and add a dedicated Solana RPC URL once; AgentFoundry will reuse it automatically."
+                )
+            else:
+                for symbol, error in errors:
+                    lines.append(f"! BLOCK {symbol:<10} · risk report unavailable · {error}")
+
+            passed = sum(item.status == "PASS" for item in assessments)
+            checked = len(assessments) + len(errors)
+            lines.append(
+                f"RESULT · {passed}/{checked} checked candidates passed every deterministic gate. "
+                "Only PASS candidates may reach Qwen analysis."
+            )
+            self.market_status.configure(text="\n".join(lines))
+            self.app.log_queue.put(
+                f"[Pack] Risk gate complete · {passed}/{checked} candidates passed. "
+                "No live trade action was available or executed."
+            )
+            if passed:
+                self._run_qwen_paper_analysis(
+                    [item for item in assessments if item.status == "PASS"],
+                    lines,
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _run_qwen_paper_analysis(self, passed_assessments, base_lines) -> None:
+        self.solana_scan_button.configure(text="QWEN ANALYZING…", state="disabled")
+        self.market_status.configure(
+            text="\n".join(base_lines + ["", "QWEN PAPER ANALYSIS · evaluating PASS candidates locally…"])
+        )
+
+        def worker() -> None:
+            try:
+                profile = self.app.current_profile()
+                models = self.app.runtime.get_models(profile)
+                if not models:
+                    raise RuntimeError("Local runtime is online but exposes no model id.")
+                analyst = LocalQwenAnalyst(profile.base_url, models[0])
+                rows = []
+                database = APP_DIR / "paper" / "solana-research.sqlite3"
+                memory = TradeMemory(database)
+                try:
+                    for assessment in passed_assessments:
+                        analysis = analyst.analyze(assessment)
+                        record = analysis_record(assessment, analysis)
+                        memory.add_research_decision(
+                            candidate_id=assessment.candidate.token_address,
+                            symbol=assessment.candidate.symbol,
+                            observed_at=time.time(),
+                            action=analysis.action,
+                            confidence=analysis.confidence,
+                            thesis=analysis.thesis,
+                            market=record["market"],
+                            risk=record["risk"],
+                            analysis=record["analysis"],
+                        )
+                        trade_id = PaperResearchEngine(memory).open_from_analysis(assessment, analysis)
+                        rows.append((assessment, analysis, trade_id))
+                finally:
+                    memory.close()
+                self.after(0, lambda: finish(rows, None))
+            except Exception as exc:
+                self.after(0, lambda error=str(exc): finish([], error))
+
+        def finish(rows, error) -> None:
+            self.solana_scan_button.configure(text="SCAN + RISK CHECK", state="normal")
+            lines = list(base_lines)
+            lines.append("")
+            lines.append("QWEN PAPER ANALYSIS · LOCAL MODEL · NO LIVE EXECUTION")
+            if error:
+                lines.append(f"! AI ANALYSIS ERROR · {error}")
+                self.market_status.configure(text="\n".join(lines))
+                self.app.log_queue.put(f"[Pack] Qwen paper analysis failed: {error}")
+                return
+
+            for assessment, analysis, trade_id in rows:
+                icon = "◆" if analysis.action == "PAPER_BUY" else "·"
+                position = " · PAPER POSITION OPEN" if trade_id else ""
+                lines.append(
+                    f"{icon} {analysis.action:<9} {assessment.candidate.symbol:<10} · "
+                    f"confidence {analysis.confidence:.0%} · {analysis.thesis}{position}"
+                )
+            lines.append(
+                "DECISIONS SAVED · PAPER research only · no wallet signing · no order transmitted."
+            )
+            self.market_status.configure(text="\n".join(lines))
+            buys = sum(1 for _assessment, analysis, trade_id in rows if analysis.action == "PAPER_BUY" and trade_id)
+            self.app.log_queue.put(
+                f"[Pack] Qwen analyzed {len(rows)} risk-passed candidate(s); PAPER decisions saved to SQLite"
+                f" · {buys} simulated position(s) open."
+            )
+            self._ensure_outcome_tracking()
+
+        threading.Thread(target=worker, daemon=True).start()
+    def _ensure_outcome_tracking(self) -> None:
+        if self._outcome_job is None:
+            self._outcome_job = self.after(1000, self._poll_paper_outcomes)
+
+    def _poll_paper_outcomes(self) -> None:
+        self._outcome_job = None
+
+        def worker() -> None:
+            database = APP_DIR / "paper" / "solana-research.sqlite3"
+            memory = TradeMemory(database)
+            try:
+                updates = PaperResearchEngine(memory).refresh_due()
+            except Exception as exc:
+                self.after(0, lambda error=str(exc): finish([], error))
+            else:
+                self.after(0, lambda: finish(updates, None))
+            finally:
+                memory.close()
+
+        def finish(updates, error) -> None:
+            if error:
+                self.app.log_queue.put(f"[Paper] Outcome tracking warning: {error}")
+            else:
+                for update in updates:
+                    if update.get("horizon"):
+                        self.app.log_queue.put(
+                            f"[Paper] {update['symbol']} · {update['horizon']} outcome recorded · "
+                            f"price {update['price']}"
+                        )
+                    elif update.get("status") == "closed_24h":
+                        self.app.log_queue.put(
+                            f"[Paper] {update['symbol']} · 24h PAPER position closed · "
+                            f"PnL {update['realized_pnl_pct']:.2f}%"
+                        )
+                    elif update.get("status") == "partial_profit":
+                        self.app.log_queue.put(
+                            f"[Paper] {update['symbol']} · PARTIAL PROFIT · "
+                            f"sold {update['sell_fraction']:.0%} · "
+                            f"remaining quantity {update['remaining_quantity']:.8g}"
+                        )
+                    elif update.get("status") == "closed_exit_policy":
+                        reasons = ", ".join(update.get("exit_reasons") or ("exit_policy",))
+                        self.app.log_queue.put(
+                            f"[Paper] {update['symbol']} · POSITION CLOSED · {reasons} · "
+                            f"PnL {update['realized_pnl_pct']:.2f}%"
+                        )
+                    elif update.get("status") == "price_unavailable":
+                        self.app.log_queue.put(
+                            f"[Paper] {update['symbol']} · price unavailable; exit check deferred."
+                        )
+            self._outcome_job = self.after(60_000, self._poll_paper_outcomes)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _analyze(self) -> None:
         self.info = detect_hardware()
         self.plan = build_self_setup_plan(self.info, self.app.model_path.get())
@@ -783,7 +1651,7 @@ class SelfSetupScreen(BaseScreen):
         self.app.log_queue.put("[Forge] Safe Self Setup applied to the current runtime profile.")
         messagebox.showinfo(
             "AgentFoundry",
-            "Safe runtime settings applied.\n\nRun Apollo Benchmarks next to measure GPU layers and concurrency before saving the final profile.",
+            "Safe runtime settings applied.\n\nRun Apollo Auto-Tune next. Deep Benchmark automatically saves and applies a verified GPU and worker profile.",
         )
 
 
@@ -1128,6 +1996,7 @@ class SettingsScreen(BaseScreen):
         self.llama_path = tk.StringVar(value=app.settings.llama_server_path)
         self.hermes_path = tk.StringVar(value=app.settings.hermes_path)
         self.model_dir = tk.StringVar(value=app.settings.model_dir)
+        self.solana_rpc_url = tk.StringVar(value=app.settings.solana_rpc_url)
         self.host = tk.StringVar(value=app.settings.host)
         self.port = tk.StringVar(value=str(app.settings.port))
         self.status_text = tk.StringVar(value="")
@@ -1144,20 +2013,23 @@ class SettingsScreen(BaseScreen):
         ttk.Entry(card, textvariable=self.model_dir).grid(row=2, column=1, sticky="ew", padx=(12, 8), pady=6)
         ttk.Button(card, text="Browse", style="Secondary.TButton", command=self._browse_models).grid(row=2, column=2, pady=6)
 
-        ttk.Label(card, text="Host", style="Muted.TLabel").grid(row=3, column=0, sticky="w", pady=6)
-        ttk.Entry(card, textvariable=self.host).grid(row=3, column=1, sticky="ew", padx=(12, 8), pady=6)
+        ttk.Label(card, text="Solana RPC URL", style="Muted.TLabel").grid(row=3, column=0, sticky="w", pady=6)
+        ttk.Entry(card, textvariable=self.solana_rpc_url).grid(row=3, column=1, columnspan=2, sticky="ew", padx=(12, 0), pady=6)
 
-        ttk.Label(card, text="Port", style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=6)
-        ttk.Entry(card, textvariable=self.port).grid(row=4, column=1, sticky="ew", padx=(12, 8), pady=6)
+        ttk.Label(card, text="Host", style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=6)
+        ttk.Entry(card, textvariable=self.host).grid(row=4, column=1, sticky="ew", padx=(12, 8), pady=6)
+
+        ttk.Label(card, text="Port", style="Muted.TLabel").grid(row=5, column=0, sticky="w", pady=6)
+        ttk.Entry(card, textvariable=self.port).grid(row=5, column=1, sticky="ew", padx=(12, 8), pady=6)
 
         actions = ttk.Frame(card, style="Panel.TFrame")
-        actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(16, 0))
+        actions.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(16, 0))
         ttk.Button(actions, text="AUTO DETECT", style="Secondary.TButton", command=self._detect).pack(side="left")
         ttk.Button(actions, text="SAVE SETTINGS", style="Gold.TButton", command=self._save).pack(side="left", padx=8)
         ttk.Button(actions, text="RUN SETUP WIZARD", style="Secondary.TButton", command=app.open_setup_wizard).pack(side="right")
 
         ttk.Label(card, textvariable=self.status_text, style="Muted.TLabel", wraplength=760).grid(
-            row=6, column=0, columnspan=3, sticky="w", pady=(12, 0)
+            row=7, column=0, columnspan=3, sticky="w", pady=(12, 0)
         )
 
     def _browse_llama(self) -> None:
@@ -1211,18 +2083,25 @@ class SettingsScreen(BaseScreen):
             messagebox.showerror("AgentFoundry", str(exc))
             return
 
-        self.app.settings.llama_server_path = self.llama_path.get().strip()
+        old_llama = self.app.settings.llama_server_path
+        new_llama = self.llama_path.get().strip()
+        self.app.settings.llama_server_path = new_llama
         self.app.settings.hermes_path = self.hermes_path.get().strip()
         self.app.settings.model_dir = self.model_dir.get().strip()
+        self.app.settings.solana_rpc_url = self.solana_rpc_url.get().strip()
         self.app.settings.host = host
         self.app.settings.port = port
-        self.app.save_app_settings()
-        self.status_text.set("Settings saved.")
+        self.app.save_app_settings(invalidate_apollo=(old_llama != new_llama))
+        self.status_text.set(
+            "Settings saved. Apollo retest required." if old_llama != new_llama
+            else "Settings saved. Apollo optimization preserved."
+        )
 
     def refresh(self) -> None:
         self.llama_path.set(self.app.settings.llama_server_path)
         self.hermes_path.set(self.app.settings.hermes_path)
         self.model_dir.set(self.app.settings.model_dir)
+        self.solana_rpc_url.set(self.app.settings.solana_rpc_url)
         self.host.set(self.app.settings.host)
         self.port.set(str(self.app.settings.port))
 

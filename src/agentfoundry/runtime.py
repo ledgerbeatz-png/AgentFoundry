@@ -7,7 +7,7 @@ import subprocess
 import threading
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Queue
 from typing import Optional
@@ -61,8 +61,8 @@ class RuntimeController:
                 return found
         return None
 
-    def build_llama_args(self, profile: RuntimeProfile) -> list[str]:
-        return [
+    def build_llama_args(self, profile: RuntimeProfile, parallel: int | None = None) -> list[str]:
+        args = [
             "-m", profile.model_path,
             "-c", str(profile.context),
             "-ngl", str(profile.gpu_layers),
@@ -77,13 +77,16 @@ class RuntimeController:
             "--host", profile.host,
             "--port", str(profile.port),
         ]
+        if parallel is not None:
+            args.extend(["--parallel", str(max(1, int(parallel)))])
+        return args
 
     def _pump_output(self, process: subprocess.Popen[str], prefix: str) -> None:
         assert process.stdout is not None
         for line in process.stdout:
             self.log(f"[{prefix}] {line.rstrip()}")
 
-    def start_server(self, profile: RuntimeProfile) -> None:
+    def start_server(self, profile: RuntimeProfile, parallel: int | None = None) -> None:
         if self.server_process and self.server_process.poll() is None:
             self.log("[AgentFoundry] llama.cpp server is already running.")
             return
@@ -96,8 +99,11 @@ class RuntimeController:
         if not executable:
             raise FileNotFoundError("llama-server was not found in PATH.")
 
-        command = [executable, *self.build_llama_args(profile)]
-        self.log("[AgentFoundry] Starting llama.cpp server...")
+        command = [executable, *self.build_llama_args(profile, parallel=parallel)]
+        self.log(
+            "[AgentFoundry] Starting llama.cpp server"
+            + (f" · {parallel} parallel worker slot(s)..." if parallel is not None else "...")
+        )
         self.log("[AgentFoundry] " + subprocess.list2cmdline(command))
 
         creationflags = 0
@@ -121,6 +127,58 @@ class RuntimeController:
         thread.start()
         self._log_threads.append(thread)
 
+    def start_server_with_gpu_fallback(
+        self,
+        profile: RuntimeProfile,
+        parallel: int | None = None,
+        step: int = 4,
+        max_fallbacks: int = 3,
+        ready_timeout: float = 45.0,
+    ) -> RuntimeProfile:
+        """Start the runtime and automatically reduce GPU offload if the server cannot load.
+
+        Apollo's saved layer count remains the target profile. This launch-only fallback
+        handles temporary VRAM pressure without destroying the benchmark result.
+        """
+        step = max(1, int(step))
+        max_fallbacks = max(0, int(max_fallbacks))
+        candidates = []
+        for index in range(max_fallbacks + 1):
+            layers = max(0, profile.gpu_layers - index * step)
+            if layers not in candidates:
+                candidates.append(layers)
+
+        attempted = []
+        for layers in candidates:
+            candidate = replace(profile, gpu_layers=layers)
+            attempted.append(layers)
+            if layers != profile.gpu_layers:
+                self.log(
+                    f"[AgentFoundry] Runtime recovery · retrying with {layers} GPU layers "
+                    f"(Apollo target {profile.gpu_layers})."
+                )
+            self.start_server(candidate, parallel=parallel)
+            if self.wait_for_server(candidate, timeout=ready_timeout):
+                if layers != profile.gpu_layers:
+                    self.log(
+                        f"[AgentFoundry] Runtime adapted successfully · {layers} GPU layers "
+                        f"(Apollo target remains {profile.gpu_layers})."
+                    )
+                return candidate
+
+            process = self.server_process
+            if process and process.poll() is None:
+                self.stop_server()
+            self.server_process = None
+            # Give Vulkan/CUDA a moment to release allocations before the next attempt.
+            time.sleep(1.5)
+
+        raise RuntimeError(
+            "Runtime could not start after GPU fallback attempts: "
+            + ", ".join(str(value) for value in attempted)
+            + " layers. Check Logs and available VRAM."
+        )
+
     def wait_for_server(self, profile: RuntimeProfile, timeout: float = 120.0) -> bool:
         deadline = time.monotonic() + timeout
         url = f"{profile.base_url}/models"
@@ -135,6 +193,22 @@ class RuntimeController:
             except Exception:
                 time.sleep(1)
         return False
+
+    def endpoint_ready(self, profile: RuntimeProfile, timeout: float = 2.0) -> bool:
+        """Return True when an OpenAI-compatible llama endpoint is actually reachable.
+
+        This is intentionally independent of server_process so AgentFoundry can
+        recognize a healthy runtime after UI restarts or when the process handle
+        is no longer owned by the current controller instance.
+        """
+        try:
+            with urllib.request.urlopen(f"{profile.base_url}/models", timeout=timeout) as response:
+                if response.status != 200:
+                    return False
+                payload = json.loads(response.read().decode("utf-8"))
+            return bool(payload.get("data"))
+        except Exception:
+            return False
 
     def get_models(self, profile: RuntimeProfile) -> list[str]:
         try:
@@ -175,6 +249,7 @@ class RuntimeController:
             process.wait(timeout=8)
         except subprocess.TimeoutExpired:
             process.kill()
+            process.wait(timeout=8)
         self.log("[AgentFoundry] llama.cpp server stopped.")
         self.server_process = None
 
