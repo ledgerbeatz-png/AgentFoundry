@@ -27,6 +27,7 @@ from .screens import (
     PlaceholderScreen,
     RuntimeScreen,
     SettingsScreen,
+    SocialCommandScreen,
 )
 from .theme import COLORS, apply_theme
 from .wizard import FirstRunWizard
@@ -106,6 +107,7 @@ class AgentFoundryApp(tk.Tk):
             ("runtime", "◈   Vulcan · Runtime"),
             ("hermes", "✦   Hermes · Agents"),
             ("creator", "✧   Venus · Creator"),
+            ("social", "☿   Mercury · Social"),
             ("benchmarks", "◎   Apollo · Benchmarks"),
             ("hardware", "⌁   Hardware"),
             ("self_setup", "⚒   Forge · Self Setup"),
@@ -136,6 +138,7 @@ class AgentFoundryApp(tk.Tk):
             "runtime": RuntimeScreen(self.content, self),
             "hermes": HermesScreen(self.content, self),
             "creator": CreatorStudioScreen(self.content, self),
+            "social": SocialCommandScreen(self.content, self),
             "benchmarks": BenchmarksScreen(self.content, self),
             "hardware": HardwareScreen(self.content, self),
             "self_setup": SelfSetupScreen(self.content, self),

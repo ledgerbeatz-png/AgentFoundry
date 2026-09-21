@@ -17,6 +17,12 @@ character continuity, structured image/video briefs, mandatory human approval an
 provider-neutral jobs for Google Flow and Higgsfield. See
 [`docs/VIRTUAL_CREATOR_STUDIO.md`](docs/VIRTUAL_CREATOR_STUDIO.md).
 
+The **Mercury Social Command** pack acts as a project-aware marketing operator:
+it stores separate brand identities, audiences and goals, builds multi-channel
+campaign calendars, prepares channel-specific drafts, enforces approval modes and
+triages community responses. External publishing remains adapter-driven so each
+account can be enabled independently.
+
 The current trading stack is deliberately **paper-only**. AgentFoundry records why a simulated trade was opened, held, partially closed or exited, then measures the outcome so candidate strategies can be replayed and validated before promotion. Paper or historical results do not guarantee future performance.
 
 The visual identity combines a restrained Greco-Roman mythic language with a practical developer-tool interface: obsidian surfaces, marble-white text, imperial-gold accents and subtle digital-god archetypes for major subsystems.

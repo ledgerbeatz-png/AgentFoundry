@@ -22,6 +22,16 @@ from .downloads import DownloadCancelled, DownloadProgress, ResumableDownloader,
 from .hardware import detect_hardware, recommend_runtime
 from .packs import builtin_registry
 from .self_setup import build_self_setup_plan
+from .social import (
+    NEARU_IDEAS,
+    ApprovalMode,
+    Campaign,
+    Channel,
+    ProjectBrand,
+    SocialMediaManager,
+    nearu_founding_1000_campaign,
+    nearu_project,
+)
 from .runtime import RuntimeProfile
 from .settings import detect_runtime_paths
 from .theme import COLORS
@@ -337,6 +347,143 @@ class CreatorStudioScreen(BaseScreen):
             self.app.log_queue.put(f"[Creator Studio] Prepared {job.provider_id} job {item.item_id}.")
         except Exception as exc:
             messagebox.showerror("Creator Studio", str(exc))
+
+
+class SocialCommandScreen(BaseScreen):
+    def __init__(self, master: tk.Misc, app: "AgentFoundryApp") -> None:
+        super().__init__(master, app, "Mercury · Social Command", "One marketing operator for every selected project.")
+        self.manager = SocialMediaManager()
+
+        body = ttk.Frame(self, style="Root.TFrame")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(1, weight=1)
+
+        brand = ttk.LabelFrame(body, text="PROJECT BRAND", style="Card.TLabelframe", padding=12)
+        brand.grid(row=0, column=0, sticky="nsew", padx=(0, 7), pady=(0, 10))
+        brand.columnconfigure(1, weight=1)
+        self.social_project_id = tk.StringVar(value="nearu")
+        self.social_name = tk.StringVar(value="NearU")
+        self.social_summary = tk.StringVar(value="Local-first dating with a real regional community")
+        self.social_audience = tk.StringVar(value="active singles")
+        self.social_objective = tk.StringVar(value="recruit the Founding 1000")
+        self.social_region = tk.StringVar(value="Frankfurt Rhein-Main")
+        self.social_tone = tk.StringVar(value="trustworthy, direct, local")
+        self.social_pillars = tk.StringVar(value="local dating, trust, Founding 1000")
+        for row, (label, variable) in enumerate((
+            ("Project ID", self.social_project_id), ("Name", self.social_name),
+            ("Summary", self.social_summary), ("Audience", self.social_audience),
+            ("Objective", self.social_objective), ("Region", self.social_region),
+            ("Tone", self.social_tone), ("Content pillars", self.social_pillars),
+        )):
+            ttk.Label(brand, text=label, style="Muted.TLabel").grid(row=row, column=0, sticky="w", pady=2)
+            ttk.Entry(brand, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=(10, 0), pady=2)
+
+        campaign = ttk.LabelFrame(body, text="CAMPAIGN & CHANNEL", style="Card.TLabelframe", padding=12)
+        campaign.grid(row=0, column=1, sticky="nsew", padx=(7, 0), pady=(0, 10))
+        campaign.columnconfigure(1, weight=1)
+        self.social_campaign = tk.StringVar(value="Founding 1000")
+        self.social_goal = tk.StringVar(value="Recruit 1,000 active regional singles")
+        self.social_cta = tk.StringVar(value="Join the Founding 1000")
+        self.social_channel = tk.StringVar(value=Channel.X.value)
+        self.social_idea = tk.StringVar(value="Warum lokale Dichte Dating besser macht")
+        self.social_approval = tk.StringVar(value=ApprovalMode.APPROVAL_REQUIRED.value)
+        rows = (("Campaign", self.social_campaign), ("Goal", self.social_goal), ("Call to action", self.social_cta))
+        for row, (label, variable) in enumerate(rows):
+            ttk.Label(campaign, text=label, style="Muted.TLabel").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(campaign, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=(10, 0), pady=3)
+        ttk.Label(campaign, text="Channel", style="Muted.TLabel").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Combobox(campaign, textvariable=self.social_channel, values=tuple(c.value for c in Channel), state="readonly").grid(row=3, column=1, sticky="ew", padx=(10, 0), pady=3)
+        ttk.Label(campaign, text="Approval", style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=3)
+        ttk.Combobox(campaign, textvariable=self.social_approval, values=tuple(m.value for m in ApprovalMode), state="readonly").grid(row=4, column=1, sticky="ew", padx=(10, 0), pady=3)
+        ttk.Label(campaign, text="Content idea", style="Muted.TLabel").grid(row=5, column=0, sticky="w", pady=3)
+        ttk.Entry(campaign, textvariable=self.social_idea).grid(row=5, column=1, sticky="ew", padx=(10, 0), pady=3)
+
+        output = ttk.LabelFrame(body, text="SOCIAL OPERATIONS PLAN", style="Card.TLabelframe", padding=10)
+        output.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        output.columnconfigure(0, weight=1)
+        output.rowconfigure(1, weight=1)
+        controls = ttk.Frame(output, style="Panel.TFrame")
+        controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Button(controls, text="BUILD PLAN & DRAFT", style="Gold.TButton", command=self._build_social_plan).pack(side="left")
+        ttk.Button(controls, text="RUN NEARU TEST", style="Secondary.TButton", command=self._run_nearu_test).pack(side="left", padx=8)
+        ttk.Label(controls, text="External publishing requires a connected channel adapter.", style="Muted.TLabel").pack(side="right")
+        self.social_preview = tk.Text(
+            output, wrap="word", state="disabled", bg=COLORS["midnight"], fg=COLORS["marble"],
+            insertbackground=COLORS["marble"], font=("Cascadia Mono", 9), relief="flat", padx=10, pady=10,
+        )
+        self.social_preview.grid(row=1, column=0, sticky="nsew")
+
+    def _build_social_plan(self) -> None:
+        try:
+            pillars = tuple(value.strip() for value in self.social_pillars.get().split(",") if value.strip())
+            project = ProjectBrand(
+                project_id=self.social_project_id.get().strip(), name=self.social_name.get().strip(),
+                summary=self.social_summary.get().strip(), audience=self.social_audience.get().strip(),
+                objective=self.social_objective.get().strip(), region=self.social_region.get().strip(),
+                tone=tuple(value.strip() for value in self.social_tone.get().split(",") if value.strip()),
+                channels=tuple(Channel), content_pillars=pillars,
+                approval_mode=ApprovalMode(self.social_approval.get()),
+            )
+            self.manager.add_project(project)
+            plan = Campaign(
+                campaign_id=self.social_campaign.get().strip().lower().replace(" ", "-"),
+                project_id=project.project_id, name=self.social_campaign.get().strip(),
+                goal=self.social_goal.get().strip(), call_to_action=self.social_cta.get().strip(),
+                start_date="2026-09-21", end_date="2026-10-21", posts_per_week=5,
+            )
+            draft = self.manager.create_draft(
+                plan, Channel(self.social_channel.get()), pillars[0], self.social_idea.get().strip()
+            )
+            calendar = self.manager.build_calendar(plan)
+            payload = {
+                "project": project.name, "objective": project.objective,
+                "approval_mode": project.approval_mode.value,
+                "calendar_preview": calendar[:7],
+                "draft": {
+                    "id": draft.draft_id, "channel": draft.channel.value, "hook": draft.hook,
+                    "body": draft.body, "call_to_action": draft.call_to_action,
+                    "hashtags": draft.hashtags, "status": draft.status.value,
+                },
+                "next_action": "Approve the draft, then connect the selected platform adapter.",
+            }
+            self.social_preview.configure(state="normal")
+            self.social_preview.delete("1.0", "end")
+            self.social_preview.insert("1.0", json.dumps(payload, indent=2, ensure_ascii=False))
+            self.social_preview.configure(state="disabled")
+            self.app.log_queue.put(f"[Social Command] Built {project.name} campaign draft for {draft.channel.value}.")
+        except Exception as exc:
+            messagebox.showerror("Social Command", str(exc))
+
+    def _run_nearu_test(self) -> None:
+        try:
+            manager = SocialMediaManager()
+            project = nearu_project()
+            campaign = nearu_founding_1000_campaign()
+            manager.add_project(project)
+            drafts = []
+            for index, entry in enumerate(manager.build_calendar(campaign)):
+                draft = manager.create_draft(
+                    campaign, Channel(entry["channel"]), entry["pillar"],
+                    NEARU_IDEAS[index % len(NEARU_IDEAS)], entry["date"],
+                )
+                drafts.append({
+                    "date": draft.scheduled_for, "channel": draft.channel.value,
+                    "pillar": draft.pillar, "body": draft.body,
+                    "hashtags": draft.hashtags, "status": draft.status.value,
+                })
+            payload = {
+                "test": "NearU · Founding 1000", "public_actions_performed": 0,
+                "approval_mode": project.approval_mode.value, "drafts": drafts,
+            }
+            self.social_preview.configure(state="normal")
+            self.social_preview.delete("1.0", "end")
+            self.social_preview.insert("1.0", json.dumps(payload, indent=2, ensure_ascii=False))
+            self.social_preview.configure(state="disabled")
+            self.app.log_queue.put("[Social Command] NearU test completed: 5 drafts, 0 public actions.")
+        except Exception as exc:
+            messagebox.showerror("NearU Social Test", str(exc))
 
 
 class BenchmarksScreen(BaseScreen):
