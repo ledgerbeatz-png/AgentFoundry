@@ -54,9 +54,12 @@ class BenchmarkRunner:
         self.llama_server_path = llama_server_path
 
     def _find_llama_server(self) -> str:
-        executable = self.llama_server_path or shutil.which("llama-server") or shutil.which("llama-server.exe")
+        configured = Path(self.llama_server_path).expanduser() if self.llama_server_path else None
+        if configured and configured.is_file():
+            return str(configured)
+        executable = shutil.which("llama-server") or shutil.which("llama-server.exe")
         if not executable:
-            raise FileNotFoundError("llama-server was not found in PATH.")
+            raise FileNotFoundError("llama-server was not found in the configured path or PATH.")
         return executable
 
     @staticmethod
