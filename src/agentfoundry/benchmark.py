@@ -240,3 +240,70 @@ class ConcurrencyBenchmarkRunner:
             self.log(f"[Apollo] {workers} workers · {result.throughput_rps:.3f} req/s · {result.average_latency_seconds:.2f}s avg")
 
         return ConcurrencyBenchmarkSummary(results=results, recommended_concurrency=select_concurrency(results))
+
+
+
+@dataclass
+class ModelComparisonTarget:
+    name: str
+    profile: RuntimeProfile
+    gpu_layers: int
+    llama_server_path: str = ""
+
+
+@dataclass
+class ModelComparisonOutcome:
+    name: str
+    result: BenchmarkResult
+    model_size_bytes: int
+    context: int
+
+    @property
+    def model_size_gb(self) -> float:
+        return self.model_size_bytes / (1024 ** 3)
+
+
+class ModelComparisonRunner:
+    """Run the same Apollo prompt against multiple local models/runtimes."""
+
+    def __init__(
+        self,
+        log: Callable[[str], None] | None = None,
+        base_test_port: int = 18100,
+    ) -> None:
+        self.log = log or (lambda _message: None)
+        self.base_test_port = base_test_port
+
+    def run(
+        self,
+        targets: list[ModelComparisonTarget],
+        prompt: str = "Reply with exactly: benchmark ready",
+        max_tokens: int = 48,
+        progress: Callable[[ModelComparisonOutcome], None] | None = None,
+    ) -> list[ModelComparisonOutcome]:
+        outcomes: list[ModelComparisonOutcome] = []
+        for index, target in enumerate(targets):
+            model_path = Path(target.profile.model_path)
+            size = model_path.stat().st_size if model_path.is_file() else 0
+            runner = BenchmarkRunner(
+                log=self.log,
+                test_port=self.base_test_port + index,
+                llama_server_path=target.llama_server_path,
+            )
+            self.log(f"[Apollo] Comparing model: {target.name}")
+            result = runner.run_one(
+                target.profile,
+                target.gpu_layers,
+                prompt=prompt,
+                max_tokens=max_tokens,
+            )
+            outcome = ModelComparisonOutcome(
+                name=target.name,
+                result=result,
+                model_size_bytes=size,
+                context=target.profile.context,
+            )
+            outcomes.append(outcome)
+            if progress:
+                progress(outcome)
+        return outcomes
