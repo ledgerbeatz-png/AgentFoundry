@@ -955,16 +955,36 @@ class DownloadsScreen(BaseScreen):
         default_dir = app.settings.model_dir or (str(Path(app.model_path.get()).parent) if app.model_path.get() else str(Path.home() / "AgentFoundry" / "models"))
         self.destination_dir = tk.StringVar(value=default_dir)
         self.sha256 = tk.StringVar()
+        self.manifests = load_model_manifests()
+        self.catalog_choice = tk.StringVar(value="Custom URL")
+        self.runtime_notice = tk.StringVar(value="")
 
-        ttk.Label(form, text="URL", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=6)
-        ttk.Entry(form, textvariable=self.url).grid(row=0, column=1, columnspan=2, sticky="ew", padx=(12, 0), pady=6)
+        ttk.Label(form, text="Catalog", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=6)
+        catalog = ttk.Combobox(
+            form,
+            textvariable=self.catalog_choice,
+            values=["Custom URL", *[manifest.name for manifest in self.manifests]],
+            state="readonly",
+        )
+        catalog.grid(row=0, column=1, columnspan=2, sticky="ew", padx=(12, 0), pady=6)
+        catalog.bind("<<ComboboxSelected>>", self._catalog_changed)
 
-        ttk.Label(form, text="Destination", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=6)
-        ttk.Entry(form, textvariable=self.destination_dir).grid(row=1, column=1, sticky="ew", padx=(12, 8), pady=6)
-        ttk.Button(form, text="Browse", style="Secondary.TButton", command=self._browse_destination).grid(row=1, column=2, pady=6)
+        ttk.Label(
+            form,
+            textvariable=self.runtime_notice,
+            style="Muted.TLabel",
+            wraplength=760,
+        ).grid(row=1, column=1, columnspan=2, sticky="w", padx=(12, 0), pady=(0, 6))
 
-        ttk.Label(form, text="SHA256 (optional)", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=6)
-        ttk.Entry(form, textvariable=self.sha256).grid(row=2, column=1, columnspan=2, sticky="ew", padx=(12, 0), pady=6)
+        ttk.Label(form, text="URL", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self.url).grid(row=2, column=1, columnspan=2, sticky="ew", padx=(12, 0), pady=6)
+
+        ttk.Label(form, text="Destination", style="Muted.TLabel").grid(row=3, column=0, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self.destination_dir).grid(row=3, column=1, sticky="ew", padx=(12, 8), pady=6)
+        ttk.Button(form, text="Browse", style="Secondary.TButton", command=self._browse_destination).grid(row=3, column=2, pady=6)
+
+        ttk.Label(form, text="SHA256 (optional)", style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self.sha256).grid(row=4, column=1, columnspan=2, sticky="ew", padx=(12, 0), pady=6)
 
         progress_card = ttk.LabelFrame(body, text="TRANSFER", style="Card.TLabelframe", padding=16)
         progress_card.grid(row=1, column=0, sticky="ew", pady=(14, 0))
@@ -991,6 +1011,25 @@ class DownloadsScreen(BaseScreen):
         self.running = False
         self.completed_path: Path | None = None
 
+    def _selected_manifest(self):
+        selected = self.catalog_choice.get()
+        return next((manifest for manifest in self.manifests if manifest.name == selected), None)
+
+    def _catalog_changed(self, _event=None) -> None:
+        manifest = self._selected_manifest()
+        if manifest is None:
+            self.runtime_notice.set("")
+            return
+        self.url.set(manifest.download_url)
+        runtime = manifest.runtime or {}
+        if runtime.get("requires_custom_build"):
+            self.runtime_notice.set(
+                f"Runtime required: {runtime.get('variant', 'custom build')}. "
+                f"{runtime.get('warning', '')}"
+            )
+        else:
+            self.runtime_notice.set(manifest.notes)
+
     def _browse_destination(self) -> None:
         folder = filedialog.askdirectory(title="Select model download folder", initialdir=self.destination_dir.get() or None)
         if folder:
@@ -1014,6 +1053,16 @@ class DownloadsScreen(BaseScreen):
         if not self.destination_dir.get().strip():
             messagebox.showerror("AgentFoundry", "Choose a destination folder.")
             return
+
+        manifest = self._selected_manifest()
+        if manifest is not None and manifest.runtime.get("requires_custom_build"):
+            if not messagebox.askyesno(
+                "AgentFoundry",
+                "This model requires a custom runtime build.\n\n"
+                f"{manifest.runtime.get('variant', 'Custom llama.cpp')}\n\n"
+                "Download the model anyway?",
+            ):
+                return
 
         filename = filename_from_url(url)
         if not filename.lower().endswith(".gguf"):
