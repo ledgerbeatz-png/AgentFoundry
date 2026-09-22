@@ -1,0 +1,40 @@
+{
+  "id": "bonsai-2-27b-ptq1-0",
+  "name": "Bonsai 2 27B PTQ1_0",
+  "family": "qwen3.8",
+  "format": "gguf",
+  "quantization": "PTQ1_0",
+  "parameter_size": "27B",
+  "default_profile": {
+    "context": 32768,
+    "gpu_layers": 20,
+    "kv_cache_k": "q4_0",
+    "kv_cache_v": "q4_0",
+    "kv_offload": false,
+    "rope_scaling": "none",
+    "rope_scale": 1.0,
+    "yarn_orig_ctx": 32768,
+    "reasoning": "on",
+    "reasoning_budget": 0,
+    "host": "127.0.0.1",
+    "port": 8080
+  },
+  "runtime": {
+    "engine": "llama.cpp",
+    "variant": "PrismML-Eng/llama.cpp",
+    "requires_custom_build": true,
+    "project_url": "https://github.com/PrismML-Eng/llama.cpp",
+    "warning": "Bonsai 2 ternary GGUF files require the PrismML llama.cpp fork. Do not use this PTQ1_0 file with stock llama.cpp."
+  },
+  "comparison": {
+    "reference_group": "agentfoundry-local-models",
+    "recommended_prompt_suite": "apollo-standard-v1"
+  },
+  "notes": "Compact 27B-class ternary model. PTQ1_0 is the smallest official packing at about 5.95 GB. Start with 32K context and let Apollo tune for the machine.",
+  "source": {
+    "provider": "huggingface",
+    "repository": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+    "filename": "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+    "download_url": "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/main/Ternary-Bonsai-2-27B-PTQ1_0.gguf"
+  }
+}
