@@ -15,6 +15,8 @@ class ModelManifest:
     download_url: str
     filename: str
     default_profile: dict
+    runtime: dict
+    notes: str = ""
 
 
 def manifest_directories() -> list[Path]:
@@ -58,6 +60,8 @@ def load_model_manifests() -> list[ModelManifest]:
                         download_url=download_url,
                         filename=filename,
                         default_profile=dict(payload.get("default_profile") or {}),
+                        runtime=dict(payload.get("runtime") or {}),
+                        notes=str(payload.get("notes") or ""),
                     )
                 )
                 seen.add(manifest_id)
