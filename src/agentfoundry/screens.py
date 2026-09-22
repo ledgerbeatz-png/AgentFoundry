@@ -591,10 +591,196 @@ class BenchmarksScreen(BaseScreen):
             self.worker_table.column(key, width=130, anchor="center")
         self.worker_table.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
+        compare = ttk.LabelFrame(body, text="MODEL VS MODEL", style="Card.TLabelframe", padding=10)
+        compare.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        compare.columnconfigure(1, weight=1)
+
+        self.compare_model = tk.StringVar()
+        self.compare_runtime = tk.StringVar()
+        self.compare_layers = tk.StringVar(value="20")
+        self.compare_context = tk.StringVar(value="32768")
+        self.compare_state = tk.StringVar(value="Compare the active model against a second GGUF using the same Apollo prompt.")
+
+        ttk.Label(compare, text="Second GGUF", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Entry(compare, textvariable=self.compare_model).grid(row=0, column=1, sticky="ew", padx=(10, 8), pady=4)
+        ttk.Button(compare, text="Browse", style="Secondary.TButton", command=self._browse_compare_model).grid(row=0, column=2, pady=4)
+
+        ttk.Label(compare, text="Second llama-server", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(compare, textvariable=self.compare_runtime).grid(row=1, column=1, sticky="ew", padx=(10, 8), pady=4)
+        ttk.Button(compare, text="Browse", style="Secondary.TButton", command=self._browse_compare_runtime).grid(row=1, column=2, pady=4)
+
+        tuning = ttk.Frame(compare, style="Panel.TFrame")
+        tuning.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        ttk.Label(tuning, text="Context", style="Muted.TLabel").pack(side="left")
+        ttk.Entry(tuning, textvariable=self.compare_context, width=10).pack(side="left", padx=(6, 14))
+        ttk.Label(tuning, text="Second GPU layers", style="Muted.TLabel").pack(side="left")
+        ttk.Entry(tuning, textvariable=self.compare_layers, width=8).pack(side="left", padx=(6, 14))
+        ttk.Button(tuning, text="COMPARE MODELS", style="Gold.TButton", command=self._start_model_compare).pack(side="right")
+
+        self.compare_table = ttk.Treeview(
+            compare,
+            columns=("model", "status", "size", "context", "latency", "tps"),
+            show="headings",
+            height=2,
+        )
+        compare_headings = {
+            "model": "Model",
+            "status": "Status",
+            "size": "GGUF size",
+            "context": "Context",
+            "latency": "Latency",
+            "tps": "Approx tok/s",
+        }
+        compare_widths = {"model": 190, "status": 90, "size": 90, "context": 90, "latency": 100, "tps": 110}
+        for key in ("model", "status", "size", "context", "latency", "tps"):
+            self.compare_table.heading(key, text=compare_headings[key])
+            self.compare_table.column(key, width=compare_widths[key], anchor="center")
+        self.compare_table.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+
+        ttk.Label(compare, textvariable=self.compare_state, style="Muted.TLabel", wraplength=860).grid(
+            row=4, column=0, columnspan=3, sticky="w", pady=(8, 0)
+        )
+
         self.best_result: BenchmarkResult | None = None
         self.recommended_workers = 1
         self.running = False
 
+
+    def _browse_compare_model(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select second GGUF model",
+            filetypes=[("GGUF models", "*.gguf"), ("All files", "*.*")],
+        )
+        if path:
+            self.compare_model.set(path)
+
+    def _browse_compare_runtime(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select llama-server for second model",
+            filetypes=[("Executable", "*.exe"), ("All files", "*.*")],
+        )
+        if path:
+            self.compare_runtime.set(path)
+
+    def _start_model_compare(self) -> None:
+        if self.running:
+            return
+        if self.app.runtime.server_running():
+            messagebox.showwarning(
+                "AgentFoundry",
+                "Stop the main runtime before comparing models so VRAM is available for Apollo.",
+            )
+            return
+        try:
+            second_model = Path(self.compare_model.get().strip()).expanduser()
+            second_runtime = self.compare_runtime.get().strip()
+            second_layers = int(self.compare_layers.get())
+            context = int(self.compare_context.get())
+            if not second_model.is_file():
+                raise ValueError("Choose the second GGUF model first.")
+            if second_runtime and not Path(second_runtime).is_file():
+                raise ValueError("The second llama-server path does not exist.")
+            if context < 1024:
+                raise ValueError("Comparison context must be at least 1024.")
+            primary = self.app.current_profile()
+            primary = RuntimeProfile(
+                model_path=primary.model_path,
+                context=context,
+                gpu_layers=primary.gpu_layers,
+                kv_cache_k=primary.kv_cache_k,
+                kv_cache_v=primary.kv_cache_v,
+                rope_scaling=primary.rope_scaling,
+                rope_scale=primary.rope_scale,
+                yarn_orig_ctx=primary.yarn_orig_ctx,
+                host="127.0.0.1",
+                port=18100,
+                reasoning=primary.reasoning,
+                reasoning_budget=primary.reasoning_budget,
+            )
+            secondary = RuntimeProfile(
+                model_path=str(second_model),
+                context=context,
+                gpu_layers=second_layers,
+                kv_cache_k=primary.kv_cache_k,
+                kv_cache_v=primary.kv_cache_v,
+                rope_scaling="none",
+                rope_scale=1.0,
+                yarn_orig_ctx=context,
+                host="127.0.0.1",
+                port=18101,
+                reasoning="on",
+                reasoning_budget=0,
+            )
+        except Exception as exc:
+            messagebox.showerror("AgentFoundry", str(exc))
+            return
+
+        self.running = True
+        for item in self.compare_table.get_children():
+            self.compare_table.delete(item)
+        self.compare_state.set("Apollo is comparing both models with the same prompt and context…")
+
+        targets = [
+            ModelComparisonTarget(
+                name=Path(primary.model_path).stem or "Current model",
+                profile=primary,
+                gpu_layers=primary.gpu_layers,
+                llama_server_path=self.app.settings.llama_server_path,
+            ),
+            ModelComparisonTarget(
+                name=second_model.stem,
+                profile=secondary,
+                gpu_layers=second_layers,
+                llama_server_path=second_runtime,
+            ),
+        ]
+        runner = ModelComparisonRunner(log=self.app.log_queue.put)
+
+        def on_result(outcome: ModelComparisonOutcome) -> None:
+            self.after(0, lambda outcome=outcome: self._append_model_compare(outcome))
+
+        def worker() -> None:
+            try:
+                outcomes = runner.run(targets, progress=on_result)
+                self.after(0, lambda: self._finish_model_compare(outcomes))
+            except Exception as exc:
+                self.after(0, lambda exc=exc: self._fail_model_compare(exc))
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _append_model_compare(self, outcome: ModelComparisonOutcome) -> None:
+        result = outcome.result
+        self.compare_table.insert(
+            "",
+            "end",
+            values=(
+                outcome.name,
+                result.status,
+                f"{outcome.model_size_gb:.2f} GB" if outcome.model_size_bytes else "—",
+                f"{outcome.context:,}",
+                f"{result.latency_seconds:.2f}s" if result.stable else "—",
+                f"{result.tokens_per_second:.2f}" if result.stable else "—",
+            ),
+        )
+
+    def _finish_model_compare(self, outcomes: list[ModelComparisonOutcome]) -> None:
+        self.running = False
+        stable = [outcome for outcome in outcomes if outcome.result.stable]
+        if len(stable) < 2:
+            self.compare_state.set("Comparison incomplete. At least one model/runtime failed; inspect Oracle logs.")
+            return
+        fastest = max(stable, key=lambda outcome: outcome.result.tokens_per_second)
+        self.compare_state.set(
+            f"Performance result: {fastest.name} produced the highest measured throughput "
+            f"({fastest.result.tokens_per_second:.2f} approximate tok/s). "
+            "This measures runtime performance, not overall model intelligence."
+        )
+
+    def _fail_model_compare(self, exc: Exception) -> None:
+        self.running = False
+        self.compare_state.set(f"Model comparison failed: {exc}")
+        self.app.log_queue.put(f"[Apollo] Model comparison failed: {exc}")
 
     def _start_concurrency(self) -> None:
         if self.running:
