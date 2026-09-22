@@ -680,6 +680,19 @@ class BenchmarksScreen(BaseScreen):
                 raise ValueError("Choose the second GGUF model first.")
             if second_runtime and not Path(second_runtime).is_file():
                 raise ValueError("The second llama-server path does not exist.")
+            matched_manifest = next(
+                (manifest for manifest in load_model_manifests() if manifest.filename == second_model.name),
+                None,
+            )
+            if (
+                matched_manifest is not None
+                and matched_manifest.runtime.get("requires_custom_build")
+                and not second_runtime
+            ):
+                raise ValueError(
+                    f"{matched_manifest.name} requires {matched_manifest.runtime.get('variant', 'a custom runtime')}. "
+                    "Choose the matching llama-server executable before comparing."
+                )
             if context < 1024:
                 raise ValueError("Comparison context must be at least 1024.")
             primary = self.app.current_profile()
