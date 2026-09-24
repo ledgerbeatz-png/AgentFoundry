@@ -4,6 +4,7 @@ from dataclasses import asdict, replace
 from datetime import date, timedelta
 from uuid import uuid4
 
+from .adapters import ActionResult, ChannelAdapter, DiscoveryItem
 from .models import (
     ApprovalMode,
     Campaign,
@@ -31,6 +32,26 @@ class SocialMediaManager:
 
     def __init__(self) -> None:
         self._projects: dict[str, ProjectBrand] = {}
+        self._adapters: dict[Channel, ChannelAdapter] = {}
+        self._public_actions_performed = 0
+
+    @property
+    def public_actions_performed(self) -> int:
+        return self._public_actions_performed
+
+    def connect_adapter(self, adapter: ChannelAdapter) -> None:
+        self._adapters[adapter.channel] = adapter
+
+    def adapter_connected(self, channel: Channel) -> bool:
+        return channel in self._adapters
+
+    def discover(self, channel: Channel, query: str, *, limit: int = 10) -> tuple[DiscoveryItem, ...]:
+        try:
+            adapter = self._adapters[channel]
+        except KeyError as exc:
+            raise RuntimeError(f"no channel adapter connected for {channel.value}") from exc
+        return adapter.discover(query, limit=limit)
+
 
     def add_project(self, project: ProjectBrand) -> None:
         project.validate()
@@ -154,6 +175,45 @@ class SocialMediaManager:
         payload["approval_mode"] = project.approval_mode.value
         payload["external_action"] = "connector_required"
         return payload
+
+    def execute_publish(self, draft: SocialDraft) -> ActionResult:
+        """Publish only after the existing approval and claim checks succeed."""
+        self.prepare_publish(draft)
+        try:
+            adapter = self._adapters[draft.channel]
+        except KeyError as exc:
+            raise RuntimeError(f"no channel adapter connected for {draft.channel.value}") from exc
+        result = adapter.publish(draft)
+        if result.success:
+            self._public_actions_performed += 1
+        return result
+
+    def execute_reply(
+        self,
+        project_id: str,
+        channel: Channel,
+        external_id: str,
+        text: str,
+        *,
+        approved: bool = False,
+    ) -> ActionResult:
+        """Execute a public reply with the same project approval boundary."""
+        project = self.get_project(project_id)
+        if project.approval_mode is not ApprovalMode.AUTOPILOT and not approved:
+            raise ValueError("this project requires approval before replying")
+        if not external_id.strip() or not text.strip():
+            raise ValueError("external_id and reply text are required")
+        blocked = [claim for claim in project.forbidden_claims if claim.casefold() in text.casefold()]
+        if blocked:
+            raise ValueError(f"reply contains forbidden claim: {blocked[0]}")
+        try:
+            adapter = self._adapters[channel]
+        except KeyError as exc:
+            raise RuntimeError(f"no channel adapter connected for {channel.value}") from exc
+        result = adapter.reply(external_id, text)
+        if result.success:
+            self._public_actions_performed += 1
+        return result
 
     def triage_engagement(self, item: EngagementItem) -> dict[str, str]:
         self.get_project(item.project_id)
